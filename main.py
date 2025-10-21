@@ -3,8 +3,6 @@ import pyrealsense2 as rs
 from pupil_apriltags import Detector
 from tools import to_H, inv_H, rot_mat_to_euler_zyx
 
-# If you're on Wayland you can also do:
-# os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 SERIALS = ["839112062097", "845112070338"]
 FRAME_W, FRAME_H, FPS = 1280, 720, 30
@@ -102,14 +100,14 @@ def make_vis_for_cam(cap, frame):
                         (10, yb), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (50,220,50), 2)
     return vis
 
-# --- open cams
+# open cams
 caps = []
 for sn in SERIALS:
     try: caps.append(RealSenseColorCap(sn, FRAME_W, FRAME_H, FPS))
     except Exception as e: print(f"[cam] open failed {sn}: {e}")
 if not caps: raise RuntimeError("No cameras opened.")
 
-# --- create a single HighGUI window explicitly
+# create a single HighGUI window explicitly
 WIN = "AprilTag REL Pose — both cams"
 cv2.namedWindow(WIN, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
 cv2.resizeWindow(WIN, 2*FRAME_W//2 + 40, FRAME_H + 80)
