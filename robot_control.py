@@ -1,12 +1,13 @@
 import time
 import numpy as np
-from numpy.ma.core import negative
 from panda_py import Panda
 from scipy.spatial.transform import Rotation as R
 
 # --- CONFIGURATION CONSTANTS ---
 ROBOT_IP = "172.16.0.2"
 DEFAULT_SPEED_FACTOR = 0.02
+
+
 # -------------------------------
 
 class PandaController:
@@ -23,7 +24,7 @@ class PandaController:
         self.ROBOT_IP = robot_ip
         self.speed_factor = default_speed_factor
         self.robot = self._connect_to_robot()
-        print(f"[config] Current speed factor is {self.speed_factor}")
+        print(f"[config] Current speed factor is {self.speed_factor:.2f}")
 
     def _connect_to_robot(self):
         """Handles the robot connection logic."""
@@ -34,7 +35,6 @@ class PandaController:
             return robot
         except Exception as e:
             print(f"[error] Could not connect to robot: {e}")
-            # Reraise or exit if connection is critical
             raise ConnectionError("Failed to connect to robot.")
 
     # --- Utility Methods ---
@@ -44,7 +44,6 @@ class PandaController:
         pos = H[:3, 3]
         R_mat = H[:3, :3]
 
-        # Convert rotation to Euler angles (ZYX = yaw,pitch,roll)
         euler_deg = R.from_matrix(R_mat).as_euler('zyx', degrees=True)
 
         print("\n[POSE INFO]")
@@ -61,42 +60,28 @@ class PandaController:
     def _calculate_new_pose_rotation(self, T_current: np.ndarray, axis: str, delta: float) -> np.ndarray:
         """
         Calculates the new 4x4 pose matrix based on current pose and a rotation delta.
-        Delta must be in degrees.
         """
-        original_axis = axis
-        axis = axis.lower()
-        if axis not in self.ROTATION_AXIS_MAP:
-            raise ValueError(f"Invalid rotation axis input: '{original_axis}'. Must be 'yaw', 'pitch', or 'roll'.")
+        # Note: The main loop ensures 'axis' is lowercase and valid before calling this.
 
-        # 1. Extract the current rotation matrix (R_current) and translation (t_current)
-        R_current_mat = T_current[:3, :3]
+        # 1. Extract and Convert Rotation
+        r_current = R.from_matrix(T_current[:3, :3])
         t_current = T_current[:3, 3]
 
-        # 2. Convert current rotation matrix to a Rotation object
-        r_current = R.from_matrix(R_current_mat)
-
-        # 3. Create the delta rotation (in radians for scipy's rotation)
+        # 2. Create the delta rotation
         delta_rad = np.deg2rad(delta)
-        scipy_axis = self.ROTATION_AXIS_MAP[axis]  # e.g., 'z' for yaw
+        scipy_axis = self.ROTATION_AXIS_MAP[axis]
 
-        # The rotation is applied *incrementally* relative to the robot's base frame.
-        # This is equivalent to applying a rotation about the base frame's x, y, or z axis.
         r_delta = R.from_rotvec(delta_rad * np.array([1 if scipy_axis == 'x' else 0,
                                                       1 if scipy_axis == 'y' else 0,
                                                       1 if scipy_axis == 'z' else 0]))
 
-        # 4. Compose the rotations: New Rotation = Delta Rotation * Current Rotation
-        # Note: Order matters! Pre-multiplying (r_delta * r_current) applies the rotation
-        # relative to the world/base frame (which is what we want for direct yaw/pitch/roll control).
+        # 3. Compose and Rebuild
         r_new = r_delta * r_current
-
-        # 5. Convert the new rotation back to a matrix
         R_new_mat = r_new.as_matrix()
 
-        # 6. Build the new homogeneous matrix
         T_new = np.identity(4)
         T_new[:3, :3] = R_new_mat
-        T_new[:3, 3] = t_current  # Keep translation the same
+        T_new[:3, 3] = t_current
 
         print(f"Applying rotation delta {delta:+.2f} degrees to {axis}.")
         return T_new
@@ -104,13 +89,8 @@ class PandaController:
     def _calculate_new_pose_translation(self, T_current: np.ndarray, axis: str, delta: float) -> np.ndarray:
         """
         Calculates the new 4x4 pose matrix based on current pose and a translation delta.
+        Assumes 'axis' is a valid key in AXIS_MAP.
         """
-        original_axis = axis
-
-        # Input validation
-        if axis not in self.AXIS_MAP:
-            raise ValueError(f"Invalid axis input: '{original_axis}'. Must be 'x', 'y', or 'z'.")
-
         n = self.AXIS_MAP[axis]
         T_new = T_current.copy()
 
@@ -126,57 +106,65 @@ class PandaController:
         """Allows for interactive control of the robot's end-effector position and orientation."""
         print("\n--- Starting Interactive Position/Orientation Control ---")
 
-
         while True:
             try:
-                # Get current pose and display it
                 H_current = self.robot.get_pose()
                 self._display_pose(H_current)
-                # --- User Input ---
-                print("Input Format: <Axis/Rotation> <Delta> (e.g., 'x 0.1' or 'yaw 10')")  # Consolidated prompt
+
+                # --- User Input Prompt ---
+                print("Input Format: <Axis/Rotation> <Delta> (e.g., 'x 0.1' or 'yaw 10')")
+                print("Can accept multiple pairs: 'x 0.1 yaw 5'")
                 print("Type 'q' or 'quit' to exit this mode.")
                 user_input = input("Enter command (or 'q'): ").lower().strip()
+
                 if user_input in ["q", "quit"]:
                     break
-                if user_input == "":
-                    print("[warning] Invalid format. Use '<axis> <delta>'.")
+                if not user_input:
                     continue
 
                 parts = user_input.split()
                 if len(parts) % 2 != 0:
-                    print("[warning] Invalid format. Use '<axis> <delta>'.")
+                    print(f"[warning] Invalid command length ({len(parts)} parts). Commands must be in pairs.")
                     continue
-                updated_H = H_current
-                for i in range(0,len(parts),2):
-                    n_str, d_str = parts[i], parts[i+1]
+
+                updated_H = H_current.copy()
+                valid_move = True
+
+                # --- Parse and Calculate All Commands ---
+                for i in range(0, len(parts), 2):
+                    n_str, d_str = parts[i], parts[i + 1]
+                    axis = n_str
 
                     try:
-                        delta, axis = (-1 * float(d_str), n_str[1:]) if n_str.startswith("-") else (float(d_str), n_str)
+                        delta = float(d_str)
                     except ValueError:
-                        print("[warning] Invalid delta (must be a number). Skipping move.")
-                        continue
+                        print(f"[warning] Delta '{d_str}' is not a valid number. Skipping move.")
+                        valid_move = False
+                        break
+
+                    # Ensure axis is clean (no leading '-')
+                    if axis.startswith("-"):
+                        axis = axis[1:]
+                        delta *= -1  # Invert delta since the sign was on the axis
 
                     # --- Decision and Calculation ---
                     is_rotation = axis in self.ROTATION_AXIS_MAP
                     is_translation = axis in self.AXIS_MAP
 
                     if is_translation:
-                        # Use the translation method
                         updated_H = self._calculate_new_pose_translation(updated_H, axis, delta)
                     elif is_rotation:
-                        # Use the new rotation method
                         updated_H = self._calculate_new_pose_rotation(updated_H, axis, delta)
                     else:
                         raise ValueError(f"Unknown axis or rotation name: '{axis}'.")
 
-                H_new = updated_H
+                if not valid_move:
+                    continue
+
                 # --- Execute Move ---
                 print("\n[robot] Moving...")
-                self.robot.move_to_pose(H_new, speed_factor=self.speed_factor)  # Blocking call
+                self.robot.move_to_pose(updated_H, speed_factor=self.speed_factor)
 
-                # Verify and display the actual pose after the move
-                H_actual = self.robot.get_pose()
-                self._display_pose(H_actual)
 
             except ValueError as ve:
                 print(f"[warning] {ve}")
@@ -188,9 +176,9 @@ class PandaController:
                 print(f"[error] An unhandled exception occurred during movement: {e}")
                 time.sleep(1)
 
-    def set_speed_factor(self, factor: float):  # Renamed for clarity and consistency
+    def set_speed_factor(self, factor: float):
         """Sets the motion speed factor with bounds checking."""
-        if not (0.0 < factor <= 1.0):  # Check limits
+        if not (0.0 < factor <= 1.0):
             print("[warning] Speed factor must be greater than 0.0 and less than or equal to 1.0.")
             return
 
@@ -198,8 +186,8 @@ class PandaController:
         self.speed_factor = factor
         print(f"[config] Successfully set speed factor from {before:.2f} to {self.speed_factor:.2f}")
 
-def main():
 
+def main():
     try:
         controller = PandaController(ROBOT_IP)
     except ConnectionError:
@@ -210,7 +198,7 @@ def main():
         print("\n--- Main Menu ---")
         print("Type 'reset' to go to start position.")
         print("Type 'pos' for interactive position control.")
-        print("Type 'speed x' to change the speed factor. x between 0 and 1.")
+        print("Type 'speed x' to change the speed factor (x between 0 and 1).")
         print("Type 'quit' or 'q' to exit.")
 
         command = input("Choose control function: ").lower().strip()
