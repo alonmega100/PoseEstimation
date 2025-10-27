@@ -1,8 +1,13 @@
 import time
 import numpy as np
+from numpy.ma.core import negative
 from panda_py import Panda
 from scipy.spatial.transform import Rotation as R
 
+# --- CONFIGURATION CONSTANTS ---
+ROBOT_IP = "172.16.0.2"
+DEFAULT_SPEED_FACTOR = 0.02
+# -------------------------------
 
 class PandaController:
     """
@@ -12,10 +17,13 @@ class PandaController:
     # Class-level constant
     AXIS_MAP = {'x': 0, 'y': 1, 'z': 2}
     ROTATION_AXIS_MAP = {'yaw': 'z', 'pitch': 'y', 'roll': 'x'}
-    def __init__(self, robot_ip: str):
-        """Initializes the robot connection."""
+
+    def __init__(self, robot_ip: str, default_speed_factor: float = DEFAULT_SPEED_FACTOR):
+        """Initializes the robot connection and motion settings."""
         self.ROBOT_IP = robot_ip
+        self.speed_factor = default_speed_factor
         self.robot = self._connect_to_robot()
+        print(f"[config] Current speed factor is {self.speed_factor}")
 
     def _connect_to_robot(self):
         """Handles the robot connection logic."""
@@ -56,11 +64,6 @@ class PandaController:
         Delta must be in degrees.
         """
         original_axis = axis
-        # Handle negative sign input for delta (if provided via axis)
-        if axis.startswith("-"):
-            axis = axis[1:]
-            delta *= -1
-
         axis = axis.lower()
         if axis not in self.ROTATION_AXIS_MAP:
             raise ValueError(f"Invalid rotation axis input: '{original_axis}'. Must be 'yaw', 'pitch', or 'roll'.")
@@ -103,10 +106,6 @@ class PandaController:
         Calculates the new 4x4 pose matrix based on current pose and a translation delta.
         """
         original_axis = axis
-        # Handle negative sign input for axis
-        if axis.startswith("-"):
-            axis = axis[1]
-            delta *= -1
 
         # Input validation
         if axis not in self.AXIS_MAP:
@@ -126,9 +125,7 @@ class PandaController:
     def position_control_loop(self):
         """Allows for interactive control of the robot's end-effector position and orientation."""
         print("\n--- Starting Interactive Position/Orientation Control ---")
-        print("Input Format 1 (Translation): <delta> <axis> (e.g., '0.1 x')")
-        print("Input Format 2 (Rotation): <delta_deg> <yaw/pitch/roll> (e.g., '10 yaw')")
-        print("Type 'q' or 'quit' to exit this mode.")
+
 
         while True:
             try:
@@ -137,19 +134,25 @@ class PandaController:
                 self._display_pose(H_current)
 
                 # --- User Input ---
+                print("Input Format: <Axis/Rotation> <Delta> (e.g., 'x 0.1' or 'yaw 10')")  # Consolidated prompt
+                print("Type 'q' or 'quit' to exit this mode.")
                 user_input = input("Enter command (or 'q'): ").lower().strip()
                 if user_input in ["q", "quit"]:
                     break
-
+                if user_input[0] == "-":
+                    multiply_delta_by_minus_one = True
+                    user_input = user_input[1:]
+                else:
+                    multiply_delta_by_minus_one = False
                 parts = user_input.split()
                 if len(parts) != 2:
-                    print("[warning] Invalid format. Use '<delta> <axis>'.")
+                    print("[warning] Invalid format. Use '<axis> <delta>'.")
                     continue
 
-                d_str, n_str = parts
+                n_str, d_str = parts
 
                 try:
-                    delta = float(d_str)
+                    delta = -1 * float(d_str) if multiply_delta_by_minus_one else float(d_str)
                     axis = n_str
                 except ValueError:
                     print("[warning] Invalid delta (must be a number). Skipping move.")
@@ -170,7 +173,7 @@ class PandaController:
 
                 # --- Execute Move ---
                 print("\n[robot] Moving...")
-                self.robot.move_to_pose(H_new)  # Blocking call
+                self.robot.move_to_pose(H_new, speed_factor=self.speed_factor)  # Blocking call
 
                 # Verify and display the actual pose after the move
                 H_actual = self.robot.get_pose()
@@ -186,8 +189,17 @@ class PandaController:
                 print(f"[error] An unhandled exception occurred during movement: {e}")
                 time.sleep(1)
 
+    def set_speed_factor(self, factor: float):  # Renamed for clarity and consistency
+        """Sets the motion speed factor with bounds checking."""
+        if not (0.0 < factor <= 1.0):  # Check limits
+            print("[warning] Speed factor must be greater than 0.0 and less than or equal to 1.0.")
+            return
+
+        before = self.speed_factor
+        self.speed_factor = factor
+        print(f"[config] Successfully set speed factor from {before:.2f} to {self.speed_factor:.2f}")
+
 def main():
-    ROBOT_IP = "172.16.0.2"
 
     try:
         controller = PandaController(ROBOT_IP)
@@ -199,6 +211,7 @@ def main():
         print("\n--- Main Menu ---")
         print("Type 'reset' to go to start position.")
         print("Type 'pos' for interactive position control.")
+        print("Type 'speed x' to change the speed factor. x between 0 and 1.")
         print("Type 'quit' or 'q' to exit.")
 
         command = input("Choose control function: ").lower().strip()
@@ -207,6 +220,17 @@ def main():
             controller.reset_position()
         elif command == "pos":
             controller.position_control_loop()
+        elif command.startswith("speed"):
+            print("--- Attempting To Change Robot Speed Factor ---")
+            parts = command.split()
+            if len(parts) != 2:
+                print("[warning] Invalid speed command format. Use 'speed <number>'.")
+                continue
+            try:
+                factor = float(parts[1])
+                controller.set_speed_factor(factor)
+            except ValueError:
+                print("[warning] Speed factor must be a valid number.")
         elif command in ["quit", "q"]:
             print("Exiting application.")
             break
