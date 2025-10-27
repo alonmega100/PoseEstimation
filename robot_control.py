@@ -132,45 +132,44 @@ class PandaController:
                 # Get current pose and display it
                 H_current = self.robot.get_pose()
                 self._display_pose(H_current)
-
                 # --- User Input ---
                 print("Input Format: <Axis/Rotation> <Delta> (e.g., 'x 0.1' or 'yaw 10')")  # Consolidated prompt
                 print("Type 'q' or 'quit' to exit this mode.")
                 user_input = input("Enter command (or 'q'): ").lower().strip()
                 if user_input in ["q", "quit"]:
                     break
-                if user_input[0] == "-":
-                    multiply_delta_by_minus_one = True
-                    user_input = user_input[1:]
-                else:
-                    multiply_delta_by_minus_one = False
-                parts = user_input.split()
-                if len(parts) != 2:
+                if user_input == "":
                     print("[warning] Invalid format. Use '<axis> <delta>'.")
                     continue
 
-                n_str, d_str = parts
-
-                try:
-                    delta = -1 * float(d_str) if multiply_delta_by_minus_one else float(d_str)
-                    axis = n_str
-                except ValueError:
-                    print("[warning] Invalid delta (must be a number). Skipping move.")
+                parts = user_input.split()
+                if len(parts) % 2 != 0:
+                    print("[warning] Invalid format. Use '<axis> <delta>'.")
                     continue
+                updated_H = H_current
+                for i in range(0,len(parts),2):
+                    n_str, d_str = parts[i], parts[i+1]
 
-                # --- Decision and Calculation ---
-                is_rotation = axis in self.ROTATION_AXIS_MAP
-                is_translation = axis in self.AXIS_MAP
+                    try:
+                        delta, axis = (-1 * float(d_str), n_str[1:]) if n_str.startswith("-") else (float(d_str), n_str)
+                    except ValueError:
+                        print("[warning] Invalid delta (must be a number). Skipping move.")
+                        continue
 
-                if is_translation:
-                    # Use the translation method
-                    H_new = self._calculate_new_pose_translation(H_current, axis, delta)
-                elif is_rotation:
-                    # Use the new rotation method
-                    H_new = self._calculate_new_pose_rotation(H_current, axis, delta)
-                else:
-                    raise ValueError(f"Unknown axis or rotation name: '{axis}'.")
+                    # --- Decision and Calculation ---
+                    is_rotation = axis in self.ROTATION_AXIS_MAP
+                    is_translation = axis in self.AXIS_MAP
 
+                    if is_translation:
+                        # Use the translation method
+                        updated_H = self._calculate_new_pose_translation(updated_H, axis, delta)
+                    elif is_rotation:
+                        # Use the new rotation method
+                        updated_H = self._calculate_new_pose_rotation(updated_H, axis, delta)
+                    else:
+                        raise ValueError(f"Unknown axis or rotation name: '{axis}'.")
+
+                H_new = updated_H
                 # --- Execute Move ---
                 print("\n[robot] Moving...")
                 self.robot.move_to_pose(H_new, speed_factor=self.speed_factor)  # Blocking call
