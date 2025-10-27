@@ -1,31 +1,5 @@
 import numpy as np
 
-def rot_mat_to_euler_zyx(r, degrees=False):
-    """
-    Decompose a 3x3 rotation matrix R into ZYX Euler angles:
-    yaw (about Z), pitch (about Y), roll (about X).
-    Returns (yaw, pitch, roll).
-    """
-    r= np.asarray(r, dtype=float)
-    assert r.shape == (3, 3), "R must be 3x3"
-
-    # R = Rz(yaw) * Ry(pitch) * Rx(roll)
-    # Stable extraction with gimbal-lock handling:
-    if abs(r[2, 0]) < 1.0 - 1e-8:
-        pitch = np.arcsin(-r[2, 0])
-        roll  = np.arctan2(r[2, 1], r[2, 2])
-        yaw   = np.arctan2(r[1, 0], r[0, 0])
-    else:
-        # Gimbal lock: pitch ≈ ±pi/2, roll and yaw are coupled
-        pitch = np.pi/2 * np.sign(-r[2, 0])
-        roll  = 0.0
-        # choose yaw that matches R as best as possible
-        yaw   = np.arctan2(-r[0, 1], r[1, 1])
-
-    if degrees:
-        return tuple(np.degrees([yaw, pitch, roll]))
-    return yaw, pitch, roll
-
 def to_H(R, t):
     H = np.eye(4); H[:3,:3] = R; H[:3,3] = t.reshape(3)
     return H
