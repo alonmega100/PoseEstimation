@@ -10,6 +10,9 @@ from tools import to_H, inv_H
 # --- CONFIGURATION CONSTANTS (All moved to the class or passed in INIT) ---
 FRAME_W, FRAME_H, FPS = 1280, 720, 30
 WORLD_TAG_ID = 0
+WORLD_TAG_SIZE = 0.138
+OBJ_TAG_SIZE = 0.032
+OBJ_TAG_IDS = {1, 2}
 
 
 class RealSenseColorCap:
