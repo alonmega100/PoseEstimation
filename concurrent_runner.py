@@ -14,8 +14,10 @@ from april_tag_processor import AprilTagProcessor, WORLD_TAG_ID, FRAME_W, FRAME_
 # This dictionary holds the current, latest state of the system
 shared_state = {
     # Pose of the Tag relative to the World Anchor (^A T_T)
-    # Stored as a dict {tag_id: 4x4 H matrix}
     "tag_pose_A": {},
+
+    # NEW: Store latest visualization image from each camera {serial_num: image}
+    "vision_image": {},
 
     # Pose of the Robot End-Effector (^R T_ee)
     "robot_pose_R": np.identity(4),
@@ -23,10 +25,8 @@ shared_state = {
     # System control flag
     "running": True
 }
-
 # Lock to ensure thread-safe access to shared_state
 state_lock = threading.Lock()
-
 
 # --- 2. THREAD FUNCTIONS ---
 
@@ -84,15 +84,13 @@ def robot_control_thread(controller: PandaController, shared_state: dict, lock: 
     print("[Robot Thread] Exiting.")
 
 
-def vision_processing_thread(shared_state: dict, lock: threading.Lock):
+def vision_processing_thread(shared_state: dict, lock: threading.Lock, serial_num):
     """
-    Continuously processes camera frames and updates the calculated tag pose
-    relative to the world anchor (^A T_T) in the shared data structure.
+    Processes camera frames and updates shared state (pose and image) without displaying.
     """
-    print("\n[Vision Thread] Starting camera processing...")
+    thread_name = threading.current_thread().name
+    print(f"\n[{thread_name}] Starting camera processing...")
 
-    # Initialize your processors (using simplified logic for one camera in this function)
-    serial_num = "839112062097"  # Use the serial of the camera that sees the target object
     try:
         processor = AprilTagProcessor(
             serial=serial_num,
@@ -101,37 +99,34 @@ def vision_processing_thread(shared_state: dict, lock: threading.Lock):
             obj_tag_ids=OBJ_TAG_IDS,
         )
     except Exception as e:
-        print(f"[Vision Thread] Failed to open camera {serial_num}: {e}")
-        shared_state["running"] = False
-        return
+        print(f"[Robot Thread ERROR] {e}")
+    # ... (rest of error handling)
+
+    # REMOVE cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
 
     try:
         while shared_state["running"]:
 
-            # 1. Process Frame (gets visualization image and H0i poses)
+            # 1. Process Frame
             vis_img, H0i_dict = processor.process_frame()
 
             # 2. Update Shared State
             with lock:
-                # H0i_dict contains the poses relative to the World Anchor (^A T_T)
-                shared_state["tag_pose_A"] = H0i_dict
+                # Update Poses
+                shared_state["tag_pose_A"].update(H0i_dict)
+                # Update Image
+                shared_state["vision_image"][serial_num] = vis_img
 
-                # 3. Display (Optional but useful for debugging)
-            cv2.imshow("Vision Feed", vis_img)
-            if cv2.waitKey(1) & 0xFF in (27, ord('q')):
-                shared_state["running"] = False
 
-            # Simulate a small delay for stable loop timing
-            time.sleep(0.033)  # Approx 30 FPS processing rate
+
+            time.sleep(0.033) # Faster sleep for consistent frame rate
 
     except Exception as e:
-        print(f"[Vision Thread ERROR] {e}")
+        print(f"[Robot Thread ERROR] {e}")
     finally:
         processor.release()
-        cv2.destroyAllWindows()
-        print("[Vision Thread] Exiting.")
-
-
+        # REMOVE cv2.destroyWindow(WINDOW_NAME)
+        print(f"[{thread_name}] Exiting.")
 def run_concurrent_system(controller: PandaController):
     """Sets up and runs the dual-threaded robot and vision system."""
 
@@ -139,34 +134,59 @@ def run_concurrent_system(controller: PandaController):
     robot_t = threading.Thread(
         target=robot_control_thread,
         args=(controller, shared_state, state_lock),
-        name="RobotControl"
-    )
-    vision_t = threading.Thread(
+        name="RobotControl")
+
+    vision_t_1 = threading.Thread(
         target=vision_processing_thread,
-        args=(shared_state, state_lock),
-        name="VisionProcessing"
+        args=(shared_state, state_lock, "839112062097"),  # **Now a string**
+        name="VisionProcessing_1"  # Changed name for clarity
+    )
+
+    vision_t_2 = threading.Thread(
+        target=vision_processing_thread,
+        args=(shared_state, state_lock, "845112070338"),  # **Now a string**
+        name="VisionProcessing_2"  # Changed name for clarity
     )
 
     # 2. Start Threads
     robot_t.start()
-    vision_t.start()
+    vision_t_1.start()
+    vision_t_2.start()
+    # 3. Main Loop: Monitor, Wait, and DISPLAY
+    WIN = "Concurrent Vision Feed"
+    cv2.namedWindow(WIN, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
 
-    # 3. Main Loop: Monitor and wait for exit
     try:
         while shared_state["running"]:
 
-            # --- OPTIONAL: Alignment Check/Logging ---
+            # --- 3a. Display Images from Threads (MUST be in main thread) ---
             with state_lock:
-                tag_pose = shared_state["tag_pose_A"].get(1)  # Get pose for Tag ID 1
+                images = shared_state["vision_image"]
+
+            vis_list = [img for img in images.values() if img is not None]
+
+            if vis_list:
+                # Mosaic (combine) the images horizontally
+                max_h = max(v.shape[0] for v in vis_list)
+                vis_list_padded = [cv2.copyMakeBorder(v, 0, max_h - v.shape[0], 0, 0,
+                                                      cv2.BORDER_CONSTANT, value=(0, 0, 0)) for v in vis_list]
+                mosaic = cv2.hconcat(vis_list_padded)
+                cv2.imshow(WIN, mosaic)
+
+            k = cv2.waitKey(1) & 0xFF
+            if k in (27, ord('q')):
+                shared_state["running"] = False
+
+            # --- 3b. Data Check/Logging (Original Logic) ---
+            with state_lock:
+                tag_pose = shared_state["tag_pose_A"].get(1)
                 robot_pose = shared_state["robot_pose_R"]
 
             if tag_pose is not None:
-                # Here is where you would calculate the error or use the data:
-                # Aligned_Prediction = CALIBRATION_H @ tag_pose
-                # print(f"Tag Pose X: {tag_pose[0, 3]:.3f} | Robot X: {robot_pose[0, 3]:.3f}")
+                # ... (rest of your logging/check logic)
                 pass
 
-            time.sleep(0.1)  # Check state 10 times per second
+            time.sleep(0.01)  # Use a very small sleep since display is now here
 
     except KeyboardInterrupt:
         print("\n[MAIN] Keyboard interrupt detected.")
@@ -178,9 +198,8 @@ def run_concurrent_system(controller: PandaController):
 
         # Wait for threads to finish cleanly
         robot_t.join()
-        vision_t.join()
-        print("[MAIN] System fully shut down.")
+        vision_t_1.join()
+        vision_t_2.join()
 
-# --- INTEGRATION STEP ---
-# In your robot_cli.py, you would now import this run_concurrent_system
-# and replace the old 'pos' command logic OR add a new 'concurrent' command.
+        cv2.destroyAllWindows()  # Clean up all windows from the main thread
+        print("[MAIN] System fully shut down.")
