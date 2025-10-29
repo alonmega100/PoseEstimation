@@ -1,6 +1,7 @@
 import numpy as np
 from parso.python.tree import String
 from panda_controller import PandaController, ROBOT_IP
+from concurrent_runner import run_concurrent_system
 import time
 
 
@@ -52,7 +53,7 @@ def main():
     while True:
         print("\n--- Main Menu ---")
         print("Type 'reset' to go to start position.")
-        print("Type 'cam' to start camera thread")
+        print("Type 'con' to start concurrent_runner")
         print("Type 'pos' for interactive position control.")
         print("Type 'speed x' to change the speed factor (x between 0 and 1).")
         print("Type 'quit' or 'q' to exit.")
@@ -61,6 +62,8 @@ def main():
 
         if command == "reset":
             controller.reset_position()
+        elif command == "con":
+            run_concurrent_system(controller)
         elif command == "pos":
             position_control_loop(controller)
         elif command.startswith("speed"):

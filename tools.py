@@ -52,6 +52,3 @@ def pose_delta(Ha, Hb):
     pos_err = np.linalg.norm(pa - pb )
     ang_err = rot_geodesic_angle_deg(Ra, Rb)
     return pos_err, ang_err
-
-
-
