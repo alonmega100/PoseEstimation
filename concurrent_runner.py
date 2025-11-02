@@ -1,294 +1,322 @@
-import queue
 import threading
 import time
+import logging
+
+import queue
 import numpy as np
 import cv2
-import sys
+from typing import Dict, Optional
 
 # Import your clean components
 from panda_controller import PandaController, ROBOT_IP
-from april_tag_processor import AprilTagProcessor, WORLD_TAG_ID, FRAME_W, FRAME_H, OBJ_TAG_IDS, WORLD_TAG_SIZE, \
-    OBJ_TAG_SIZE
+from april_tag_processor import (
+    AprilTagProcessor, WORLD_TAG_ID, FRAME_W, FRAME_H,
+    OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE
+)
 
-# --- 1. SHARED DATA STRUCTURE ---
+# -----------------------------
+# Config & Logging
+# -----------------------------
+CAMERA_SERIALS = ["839112062097", "845112070338"]
 
-# This dictionary holds the current, latest state of the system
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(threadName)s] %(message)s"
+)
+
+# -----------------------------
+# Shared State (guarded by lock)
+# -----------------------------
 shared_state = {
-    # Pose of the Tag relative to the World Anchor (^A T_T)
-    "tag_pose_A": {},
-
-    # NEW: Store latest visualization image from each camera {serial_num: image}
-    "vision_image": {},
-
-    # Pose of the Robot End-Effector (^R T_ee)
-    "robot_pose_R": np.identity(4),
-
-    "command_queue": queue.Queue(),
-    # System control flag
-    "running": True
+    "tag_pose_A": {},                # dict[tag_id] -> 4x4 H
+    "vision_image": {},              # dict[serial] -> np.ndarray (latest)
+    "robot_pose_R": np.identity(4),  # 4x4 H
 }
-# Lock to ensure thread-safe access to shared_state
 state_lock = threading.Lock()
 
-# --- 2. THREAD FUNCTIONS ---
-def command_writer_thread(shared_state: dict, lock: threading.Lock):
-    print("Command writer thread started")
-    while shared_state["running"]:
-        try:
-            # Note: Input is inherently blocking, which is fine for this writer thread.
-            command = input("Type command (e.g., 'x 0.05'), 'l' for log, or 'q' to quit: ").strip().lower()
+# -----------------------------
+# Command Queues
+# -----------------------------
+# Per-target queues prevent consumers from stealing each other's messages.
+command_queues: Dict[str, queue.Queue] = {
+    "robot": queue.Queue(maxsize=100),
+    **{sn: queue.Queue(maxsize=100) for sn in CAMERA_SERIALS}
+}
 
-            if not command:
+# -----------------------------
+# Threads
+# -----------------------------
+def command_writer_thread(stop_event: threading.Event):
+    """
+    Reads stdin and enqueues commands to per-target queues.
+    Commands:
+        'q' | 'quit' | 'exit' -> stop
+        'log' | 'l'           -> enqueue 'log' for all cameras + robot
+        anything else         -> enqueues as robot command string
+    """
+    logging.info("Command writer started")
+    while not stop_event.is_set():
+        try:
+            cmd = input("Type command (q=quit, l=log): ").strip()
+            if not cmd:
                 continue
 
-            # --- Handle Quit Command ---
-            if command in ["q", "exit", "quit"]:
-                with lock:
-                    shared_state["running"] = False
-                    # Put a dummy command to unblock other threads if needed
-                    shared_state["command_queue"].put("quit_signal")
+            if cmd in ("q", "quit", "exit"):
+                stop_event.set()
                 break
 
-            # --- Handle Log Command ---
-            elif command in ["log", "l"]:
-                # Log commands are put in the queue to be read by all relevant threads
-                with lock:
-                    shared_state["command_queue"].put("camera:log")  # General camera log
-                    shared_state["command_queue"].put("robot:log") # Robot log is handled below
+            if cmd in ("l", "log"):
+                # fan-out to all
+                for sn in CAMERA_SERIALS:
+                    try:
+                        command_queues[sn].put_nowait(("log", None))
+                    except queue.Full:
+                        logging.warning(f"Queue full for camera {sn}; drop 'log'")
+                try:
+                    command_queues["robot"].put_nowait(("log", None))
+                except queue.Full:
+                    logging.warning("Queue full for robot; drop 'log'")
+                continue
 
-            # --- Handle Robot Movement Commands ---
-            else:
-                with lock:
-                    # Prefix robot commands so the robot thread can filter them easily
-                    shared_state["command_queue"].put("robot:" + command)
+            # Everything else goes to the robot
+            try:
+                command_queues["robot"].put_nowait(("move", cmd))
+            except queue.Full:
+                logging.warning("Queue full for robot; drop 'move'")
+        except KeyboardInterrupt:
+            stop_event.set()
+            break
+        except Exception as e:
+            logging.exception(f"Command writer error: {e}")
+            time.sleep(0.5)
+
+    logging.info("Command writer exiting")
+
+
+def robot_control_thread(controller: PandaController, stop_event: threading.Event):
+    """
+    Consumes robot commands and updates shared robot pose.
+    """
+    logging.info("Robot control started")
+    backoff = 0.1
+
+    while not stop_event.is_set():
+        try:
+            # Always keep the latest pose in shared_state (best-effort)
+            try:
+                current_H = controller.robot.get_pose()
+                with state_lock:
+                    shared_state["robot_pose_R"] = current_H
+            except Exception as e:
+                logging.warning(f"get_pose failed: {e}")
+
+            try:
+                cmd_type, payload = command_queues["robot"].get(timeout=0.1)
+            except queue.Empty:
+                time.sleep(0.05)
+                continue
+
+            if cmd_type == "log":
+                # Already stored current_H above
+                logging.info("Robot logged current pose")
+                continue
+
+            if cmd_type == "move":
+                raw = payload or ""
+                # Delegate parse/execute to controller
+                try:
+                    controller._display_pose(current_H)
+                except Exception as e:
+                    logging.debug(f"_display_pose failed (non-fatal): {e}")
+
+                try:
+                    updated_H, valid = controller.pos_command_to_H(raw)
+                except Exception as e:
+                    logging.error(f"Failed to parse command '{raw}': {e}")
+                    valid = False
+                    updated_H = None
+
+                if valid and updated_H is not None:
+                    try:
+                        controller.robot.move_to_pose(updated_H)
+                        # Update shared pose after motion
+                        current_H = controller.robot.get_pose()
+                        with state_lock:
+                            shared_state["robot_pose_R"] = current_H
+                    except Exception as e:
+                        logging.error(f"move_to_pose failed: {e}")
+                else:
+                    logging.warning(f"Ignored invalid robot command: {raw}")
+
+            # small successful-iteration sleep
+            time.sleep(0.05)
+            backoff = 0.1  # reset backoff after success
 
         except KeyboardInterrupt:
-            with lock:
-                shared_state["running"] = False
+            stop_event.set()
             break
         except Exception as e:
-            print(f"[Command Writer Thread ERROR] {e}")
-            time.sleep(1)
+            logging.exception(f"Robot thread error: {e}")
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 2.0)
 
-    print("[Command Writer Thread] Exiting.")
+    logging.info("Robot control exiting")
 
 
-def robot_control_thread(controller: PandaController, shared_state: dict, lock: threading.Lock):
-    print("\n[Robot Thread] Starting Interactive Control...")
+def vision_processing_thread(serial_num: str, stop_event: threading.Event):
+    """
+    Reads frames, updates latest image; consumes 'log' commands to snapshot poses.
+    """
+    logging.info(f"Vision processing started for {serial_num}")
+    processor: Optional[AprilTagProcessor] = None
 
-    while shared_state["running"]:
-        # Use a short timeout to prevent blocking the entire loop if the queue is empty
-        command_prefix = None
-        command_body = None
-
+    try:
         try:
-            # 1. Non-Blocking Command Retrieval
-            with lock:
-                # Use get_nowait() or a timeout to prevent blocking.
-                # Since we use a loop and want to continue, get_nowait is simpler here.
-                command = shared_state["command_queue"].get_nowait()
-
-                # Split command into prefix and body
-                if ":" in command:
-                    command_prefix, command_body = command.split(":", 1)
-                else:
-                    # Handle direct signals like "quit_signal"
-                    command_prefix = command
-                    command_body = ""
-
-        except queue.Empty:
-            # If the queue is empty, do nothing and proceed with the rest of the loop
-            pass
+            processor = AprilTagProcessor(
+                serial=serial_num,
+                world_tag_size=WORLD_TAG_SIZE,
+                obj_tag_size=OBJ_TAG_SIZE,
+                obj_tag_ids=OBJ_TAG_IDS,
+            )
         except Exception as e:
-            print(f"[Robot Thread ERROR] Error reading command queue: {e}")
+            logging.exception(f"Failed to init AprilTagProcessor[{serial_num}]: {e}")
+            return  # Exit thread if camera cannot initialize
 
-        # 2. Process Command if found
-        if command_prefix == "robot":
-            move_command = command_body.strip()
-            print(f"[Robot Thread] Received command: '{move_command}'")  # KEEP THIS FOR DEBUGGING
-
-            # --- Stream current pose before executing command ---
-            current_H = controller.robot.get_pose()
-            with lock:
-                # This is the "robot:log" action if implemented, currently merged with pose update
-                shared_state["robot_pose_R"] = current_H
-
-                # --- Execute Robot Movement ---
-            controller._display_pose(current_H)
-            updated_H, valid = controller.pos_command_to_H(move_command)
-
-            if valid:
-                try:
-                    controller.robot.move_to_pose(updated_H)
-                    print(f"[Robot Thread] Executed move: {move_command}")
-                except Exception as e:
-                    print(f"[Robot Thread ERROR] Failed to move robot: {e}")
-
-        elif command_prefix == "quit_signal":
-            # Graceful exit triggered by command writer
-            shared_state["running"] = False
-            break
-
-        elif command_prefix is not None:
-            print(f"[Robot Thread] Ignoring command prefix: {command_prefix}")
-
-        # 3. Loop Control
-        time.sleep(0.1)  # Short sleep to prevent high CPU usage
-
-    print("[Robot Thread] Exiting.")
-
-def vision_processing_thread(shared_state: dict, lock: threading.Lock, serial_num):
-    """
-    Processes camera frames and updates shared state (pose and image) without displaying.
-    """
-    thread_name = threading.current_thread().name
-    print(f"\n[{thread_name}] Starting camera processing...")
-
-    try:
-        processor = AprilTagProcessor(
-            serial=serial_num,
-            world_tag_size=WORLD_TAG_SIZE,
-            obj_tag_size=OBJ_TAG_SIZE,
-            obj_tag_ids=OBJ_TAG_IDS,
-        )
-    except Exception as e:
-        print(f"[Robot Thread ERROR] {e}")
-    # ... (rest of error handling)
-
-    # REMOVE cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
-
-    try:
-        while shared_state["running"]:
-
-            # 1. Process Frame
-            vis_img, H0i_dict = processor.process_frame()
-
-            # 2. Check for Log Command (MUST use try/except/put to pass non-camera commands)
-            log_command = False
+        backoff = 0.01
+        while not stop_event.is_set():
             try:
-                # Get one command non-blocking
-                with lock:
-                    command = shared_state["command_queue"].get_nowait()
+                vis_img, H0i_dict = processor.process_frame()
+                # Update latest image
+                with state_lock:
+                    shared_state["vision_image"][serial_num] = vis_img
 
-                if command == "camera:log":
-                    log_command = True
-                    # The command is consumed and processed, so it's not put back.
-                elif command == "quit_signal":
-                    shared_state["running"] = False
-                    break
-                else:
-                    # PUT IT BACK for other threads (like the robot) to read!
-                    with lock:
-                        shared_state["command_queue"].put(command)
+                # Drain all pending commands for this camera (keep only the last effect)
+                drained = []
+                while True:
+                    try:
+                        drained.append(command_queues[serial_num].get_nowait())
+                    except queue.Empty:
+                        break
 
-            except queue.Empty:
-                pass  # No command in the queue
+                for (cmd_type, payload) in drained:
+                    if cmd_type == "log":
+                        # Merge/overwrite tag poses
+                        with state_lock:
+                            shared_state["tag_pose_A"].update(H0i_dict)
+                        logging.info(f"Camera {serial_num}: logged {len(H0i_dict)} tag poses")
+
+                # Frame pacing
+                time.sleep(0.01)
+                backoff = 0.01
+
+            except KeyboardInterrupt:
+                stop_event.set()
+                break
             except Exception as e:
-                print(f"[{thread_name} ERROR] Error handling command: {e}")
+                logging.warning(f"Vision[{serial_num}] frame error: {e}")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 0.2)  # cap backoff for vision
 
-            # 3. Update Shared State
-            with lock:
-                # Update Image always
-                shared_state["vision_image"][serial_num] = vis_img
-
-                # Log Pose only if the command was found
-                if log_command:
-                    print(f"[{thread_name}] Logging pose data.")  # For verification
-                    # logger.log("[CAMERA] Logging Position")
-                    shared_state["tag_pose_A"].update(H0i_dict)
-
-            time.sleep(0.033)  # Faster sleep for consistent frame rate
-
-    except Exception as e:
-        print(f"[{thread_name} ERROR] {e}")
     finally:
-        processor.release()
-        print(f"[{thread_name}] Exiting.")
+        if processor is not None:
+            try:
+                processor.release()
+            except Exception as e:
+                logging.debug(f"Release failed for {serial_num}: {e}")
+        logging.info(f"Vision processing exiting for {serial_num}")
 
 
+# -----------------------------
+# Main orchestration
+# -----------------------------
 def run_concurrent_system(controller: PandaController):
-    """Sets up and runs the dual-threaded robot and vision system."""
+    stop_event = threading.Event()
 
-    # 1. Create Threads
+    # Threads
     robot_t = threading.Thread(
         target=robot_control_thread,
-        args=(controller, shared_state, state_lock),
-        name="RobotControl")
-
-    vision_t_1 = threading.Thread(
-        target=vision_processing_thread,
-        args=(shared_state, state_lock, "839112062097"),
-        name="VisionProcessing_1"
+        name="RobotControl",
+        args=(controller, stop_event),
+        daemon=True
     )
-
-    vision_t_2 = threading.Thread(
-        target=vision_processing_thread,
-        args=(shared_state, state_lock, "845112070338"),
-        name="VisionProcessing_2"
-    )
+    vision_threads = [
+        threading.Thread(
+            target=vision_processing_thread,
+            name=f"Vision_{sn}",
+            args=(sn, stop_event),
+            daemon=True
+        )
+        for sn in CAMERA_SERIALS
+    ]
     command_t = threading.Thread(
         target=command_writer_thread,
-        args=(shared_state, state_lock),
-        name="CommandWriter"
+        name="CommandWriter",
+        args=(stop_event,),
+        daemon=True
     )
 
-    # 2. Start Threads
+    # Start
     robot_t.start()
-    vision_t_1.start()
-    vision_t_2.start()
+    for t in vision_threads:
+        t.start()
     command_t.start()
 
-    # 3. Main Loop: Monitor, Wait, and DISPLAY
+    # UI in main thread
     WIN = "Concurrent Vision Feed"
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
 
     try:
-        while shared_state["running"]:
-
-            # --- 3a. Display Images from Threads (MUST be in main thread) ---
+        while not stop_event.is_set():
+            # Gather latest images (non-blocking)
             with state_lock:
-                images = shared_state["vision_image"]
+                images = [shared_state["vision_image"].get(sn) for sn in CAMERA_SERIALS]
 
-            vis_list = [img for img in images.values() if img is not None]
-
-            if vis_list:
-                max_h = max(v.shape[0] for v in vis_list)
-                vis_list_padded = [cv2.copyMakeBorder(v, 0, max_h - v.shape[0], 0, 0,
-                                                      cv2.BORDER_CONSTANT, value=(0, 0, 0)) for v in vis_list]
-                mosaic = cv2.hconcat(vis_list_padded)
+            images = [img for img in images if img is not None]
+            if images:
+                max_h = max(img.shape[0] for img in images)
+                padded = [
+                    cv2.copyMakeBorder(
+                        img, 0, max_h - img.shape[0], 0, 0,
+                        cv2.BORDER_CONSTANT, value=(0, 0, 0)
+                    ) for img in images
+                ]
+                mosaic = cv2.hconcat(padded)
                 cv2.imshow(WIN, mosaic)
 
             k = cv2.waitKey(1) & 0xFF
             if k in (27, ord('q')):
-                shared_state["running"] = False
+                stop_event.set()
+                break
 
-
-            # --- 3b. Data Check/Logging (Original Logic) ---
-            with state_lock:
-                tag_pose = shared_state["tag_pose_A"].get(1)
-                robot_pose = shared_state["robot_pose_R"]
-
-            if tag_pose is not None:
-                # ... (rest of your logging/check logic)
-                pass
-
-            time.sleep(0.01)  # Use a very small sleep since display is now here
+            time.sleep(0.01)
 
     except KeyboardInterrupt:
-        print("\n[MAIN] Keyboard interrupt detected.")
-
+        logging.info("KeyboardInterrupt in main; stopping...")
+        stop_event.set()
+    except Exception as e:
+        logging.exception(f"Main loop error: {e}")
+        stop_event.set()
     finally:
-        # 4. Graceful Shutdown
-        print("[MAIN] Shutting down concurrent processes...")
-        shared_state["running"] = False
+        logging.info("Shutting down...")
+        # Give threads a moment to observe stop_event
+        for _ in range(50):
+            if not any(t.is_alive() for t in ([robot_t] + vision_threads + [command_t])):
+                break
+            time.sleep(0.02)
 
-        # Wait for threads to finish cleanly
-        robot_t.join()
-        vision_t_1.join()
-        vision_t_2.join()
-        command_t.join()
+        # Join politely
+        robot_t.join(timeout=1.0)
+        for t in vision_threads:
+            t.join(timeout=1.0)
+        command_t.join(timeout=1.0)
 
-        cv2.destroyAllWindows()  # Clean up all windows from the main thread
+        cv2.destroyAllWindows()
+        logging.info("System fully shut down.")
 
-        ### log all the data into a csv to be done###
-        print("[MAIN] System fully shut down.")
+
+# -----------------------------
+# Example entry (uncomment when integrating)
+# -----------------------------
+# if __name__ == "__main__":
+#     ctrl = PandaController(ROBOT_IP)
+#     run_concurrent_system(ctrl)
