@@ -285,9 +285,24 @@ def run_concurrent_system(controller: PandaController):
     # UI in main thread
     WIN = "Concurrent Vision Feed"
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
-
+    i = -1
     try:
+
         while not stop_event.is_set():
+            i+=1
+            if i%10==0:
+                log_event("command", "log_request", {"targets": ["robot"] + CAMERA_SERIALS})
+
+                for sn in CAMERA_SERIALS:
+                    try:
+                        command_queues[sn].put_nowait(("log", None))
+                    except queue.Full:
+                        logging.warning(f"Queue full for camera {sn}; drop 'log'")
+                try:
+                    command_queues["robot"].put_nowait(("log", None))
+                except queue.Full:
+                    logging.warning("Queue full for robot; drop 'log'")
+                continue
             # Gather latest images (non-blocking)
             with state_lock:
                 images = [shared_state["vision_image"].get(sn) for sn in CAMERA_SERIALS]
