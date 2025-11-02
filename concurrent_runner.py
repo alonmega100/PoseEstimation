@@ -219,7 +219,7 @@ def vision_processing_thread(serial_num: str, stop_event: threading.Event):
 
                 for (cmd_type, payload) in drained:
                     if cmd_type == "log":
-                        log_event(serial_num, "tag_pose_snapshot", {"count": len(H0i_dict)})
+                        log_event(serial_num, "tag_pose_snapshot", {"pose": H0i_dict})
 
                         # Merge/overwrite tag poses
                         with state_lock:
