@@ -19,6 +19,9 @@ from april_tag_processor import (
 # Config & Logging
 # -----------------------------
 CAMERA_SERIALS = ["839112062097", "845112070338"]
+# --- Logging rate target (both robot & cameras) ---
+TARGET_LOG_HZ = 30.0            # try 30; bump to 60 if your camera processing keeps up
+LOG_INTERVAL = 1.0 / TARGET_LOG_HZ
 
 logging.basicConfig(
     level=logging.INFO,
@@ -112,43 +115,37 @@ def command_writer_thread(stop_event: threading.Event):
 
 def robot_control_thread(controller: PandaController, stop_event: threading.Event):
     """
-    Consumes robot commands and updates shared robot pose.
+    Consumes robot commands and updates shared robot pose at high rate.
+    Key changes:
+      - Drain/Coalesce queue: handle all pending items each loop.
+      - Only call get_pose() when a log is actually requested.
+      - Avoid per-sample INFO spam.
     """
     logging.info("Robot control started")
-    backoff = 0.01
 
     while not stop_event.is_set():
         try:
-            # Always keep the latest pose in shared_state (best-effort)
-            try:
-                current_H = controller.robot.get_pose()
-                with state_lock:
-                    shared_state["robot_pose_R"] = current_H
-            except Exception as e:
-                logging.warning(f"get_pose failed: {e}")
+            got_log_request = False
+            move_cmds = []
 
-            try:
-                cmd_type, payload = command_queues["robot"].get(timeout=0.1)
-            except queue.Empty:
-                time.sleep(0.01)
-                continue
-
-            if cmd_type == "log":
-                # Already stored current_H above
-                log_event("robot", "pose_snapshot", {"pose": current_H.tolist()})
-
-                logging.info("Robot logged current pose")
-                continue
-
-            if cmd_type == "move":
-                raw = payload or ""
-                # Delegate parse/execute to controller
+            # ---- Drain the queue non-blocking ----
+            while True:
                 try:
-                    controller._display_pose(current_H)
-                except Exception as e:
-                    logging.debug(f"_display_pose failed (non-fatal): {e}")
+                    cmd_type, payload = command_queues["robot"].get_nowait()
+                except queue.Empty:
+                    break
 
+                if cmd_type == "log":
+                    got_log_request = True
+                elif cmd_type == "move":
+                    move_cmds.append(payload)
+
+            # ---- Execute any move commands (in order) ----
+            for raw in move_cmds:
+                raw = raw or ""
                 try:
+                    # Only display pose on demand; not rate-critical
+                    # controller._display_pose(...)  # keep disabled at high rate
                     updated_H, valid = controller.pos_command_to_H(raw)
                 except Exception as e:
                     logging.error(f"Failed to parse command '{raw}': {e}")
@@ -158,26 +155,31 @@ def robot_control_thread(controller: PandaController, stop_event: threading.Even
                 if valid and updated_H is not None:
                     try:
                         controller.robot.move_to_pose(updated_H)
-                        # Update shared pose after motion
-                        current_H = controller.robot.get_pose()
-                        with state_lock:
-                            shared_state["robot_pose_R"] = current_H
                     except Exception as e:
                         logging.error(f"move_to_pose failed: {e}")
-                else:
-                    logging.warning(f"Ignored invalid robot command: {raw}")
 
-            # small successful-iteration sleep
-            time.sleep(0.01)
-            backoff = 0.01
+            # ---- If any log was requested, snapshot exactly once ----
+            if got_log_request:
+                try:
+                    current_H = controller.robot.get_pose()
+                    with state_lock:
+                        shared_state["robot_pose_R"] = current_H
+                    log_event("robot", "pose_snapshot", {"pose": current_H.tolist()})
+                    # DEBUG only; INFO at 30–60 Hz is expensive
+                    logging.debug("Robot logged current pose")
+                except Exception as e:
+                    logging.warning(f"get_pose failed: {e}")
+
+            # ---- Idle pacing ----
+            if not got_log_request and not move_cmds:
+                time.sleep(0.001)  # light idle sleep
 
         except KeyboardInterrupt:
             stop_event.set()
             break
         except Exception as e:
             logging.exception(f"Robot thread error: {e}")
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 2.0)
+            time.sleep(0.005)
 
     logging.info("Robot control exiting")
 
@@ -224,7 +226,7 @@ def vision_processing_thread(serial_num: str, stop_event: threading.Event):
                         # Merge/overwrite tag poses
                         with state_lock:
                             shared_state["tag_pose_A"].update(H0i_dict)
-                        logging.info(f"Camera {serial_num}: logged {len(H0i_dict)} tag poses")
+                        logging.debug(f"Camera {serial_num}: logged {len(H0i_dict)} tag poses")
 
                 # Frame pacing
                 time.sleep(0.01)
@@ -285,12 +287,20 @@ def run_concurrent_system(controller: PandaController):
     # UI in main thread
     WIN = "Concurrent Vision Feed"
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
+    next_log_time = time.perf_counter()
+
     i = -1
     try:
 
         while not stop_event.is_set():
-            i+=1
-            if i%10==0:
+            now = time.perf_counter()
+
+            # fire log commands at fixed rate
+            if now >= next_log_time:
+                # catch up if we fell behind
+                while next_log_time <= now:
+                    next_log_time += LOG_INTERVAL
+
                 log_event("command", "log_request", {"targets": ["robot"] + CAMERA_SERIALS})
 
                 for sn in CAMERA_SERIALS:
@@ -298,6 +308,7 @@ def run_concurrent_system(controller: PandaController):
                         command_queues[sn].put_nowait(("log", None))
                     except queue.Full:
                         logging.warning(f"Queue full for camera {sn}; drop 'log'")
+
                 try:
                     command_queues["robot"].put_nowait(("log", None))
                 except queue.Full:
@@ -324,7 +335,7 @@ def run_concurrent_system(controller: PandaController):
                 stop_event.set()
                 break
 
-            time.sleep(0.01)
+            time.sleep(0.001)  # tiny sleep to keep CPU sane
 
     except KeyboardInterrupt:
         logging.info("KeyboardInterrupt in main; stopping...")
