@@ -105,7 +105,7 @@ def command_writer_thread(stop_event: threading.Event):
             break
         except Exception as e:
             logging.exception(f"Command writer error: {e}")
-            time.sleep(0.5)
+            time.sleep(0.01)
 
     logging.info("Command writer exiting")
 
@@ -115,7 +115,7 @@ def robot_control_thread(controller: PandaController, stop_event: threading.Even
     Consumes robot commands and updates shared robot pose.
     """
     logging.info("Robot control started")
-    backoff = 0.1
+    backoff = 0.01
 
     while not stop_event.is_set():
         try:
@@ -130,7 +130,7 @@ def robot_control_thread(controller: PandaController, stop_event: threading.Even
             try:
                 cmd_type, payload = command_queues["robot"].get(timeout=0.1)
             except queue.Empty:
-                time.sleep(0.05)
+                time.sleep(0.01)
                 continue
 
             if cmd_type == "log":
@@ -168,8 +168,8 @@ def robot_control_thread(controller: PandaController, stop_event: threading.Even
                     logging.warning(f"Ignored invalid robot command: {raw}")
 
             # small successful-iteration sleep
-            time.sleep(0.05)
-            backoff = 0.1  # reset backoff after success
+            time.sleep(0.01)
+            backoff = 0.01
 
         except KeyboardInterrupt:
             stop_event.set()
@@ -338,7 +338,7 @@ def run_concurrent_system(controller: PandaController):
         for _ in range(50):
             if not any(t.is_alive() for t in ([robot_t] + vision_threads + [command_t])):
                 break
-            time.sleep(0.02)
+            time.sleep(0.01)
 
         # Join politely
         robot_t.join(timeout=1.0)
