@@ -1,7 +1,8 @@
 import threading
 import time
 import logging
-
+import csv
+import datetime
 import queue
 import numpy as np
 import cv2
@@ -34,6 +35,8 @@ shared_state = {
 }
 state_lock = threading.Lock()
 
+run_logs = []
+log_lock = threading.Lock()
 # -----------------------------
 # Command Queues
 # -----------------------------
@@ -42,6 +45,18 @@ command_queues: Dict[str, queue.Queue] = {
     "robot": queue.Queue(maxsize=100),
     **{sn: queue.Queue(maxsize=100) for sn in CAMERA_SERIALS}
 }
+
+
+def log_event(source: str, event: str, data: dict = None):
+    """Thread-safe logging to shared run_logs buffer."""
+    entry = {
+        "timestamp": datetime.datetime.now().isoformat(timespec="milliseconds"),
+        "source": source,
+        "event": event,
+        "data": data or {},
+    }
+    with log_lock:
+        run_logs.append(entry)
 
 # -----------------------------
 # Threads
@@ -67,6 +82,8 @@ def command_writer_thread(stop_event: threading.Event):
 
             if cmd in ("l", "log"):
                 # fan-out to all
+                log_event("command", "log_request", {"targets": ["robot"] + CAMERA_SERIALS})
+
                 for sn in CAMERA_SERIALS:
                     try:
                         command_queues[sn].put_nowait(("log", None))
@@ -118,6 +135,8 @@ def robot_control_thread(controller: PandaController, stop_event: threading.Even
 
             if cmd_type == "log":
                 # Already stored current_H above
+                log_event("robot", "pose_snapshot", {"pose": current_H.tolist()})
+
                 logging.info("Robot logged current pose")
                 continue
 
@@ -200,6 +219,8 @@ def vision_processing_thread(serial_num: str, stop_event: threading.Event):
 
                 for (cmd_type, payload) in drained:
                     if cmd_type == "log":
+                        log_event(serial_num, "tag_pose_snapshot", {"count": len(H0i_dict)})
+
                         # Merge/overwrite tag poses
                         with state_lock:
                             shared_state["tag_pose_A"].update(H0i_dict)
@@ -309,6 +330,20 @@ def run_concurrent_system(controller: PandaController):
         for t in vision_threads:
             t.join(timeout=1.0)
         command_t.join(timeout=1.0)
+
+        # Save collected logs to disk
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_filename = f"session_log_{timestamp}.csv"
+        try:
+            with open(log_filename, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["timestamp", "source", "event", "data"])
+                writer.writeheader()
+                with log_lock:
+                    for entry in run_logs:
+                        writer.writerow(entry)
+            logging.info(f"Saved {len(run_logs)} log entries to {log_filename}")
+        except Exception as e:
+            logging.error(f"Failed to save run logs: {e}")
 
         cv2.destroyAllWindows()
         logging.info("System fully shut down.")
