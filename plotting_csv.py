@@ -8,59 +8,39 @@ import numpy as np
 import plotly.graph_objects as go
 import re
 import os
-import glob  # New import for file searching
-from pathlib import Path  # New import for modern path handling
+import glob
+from pathlib import Path
 
-
-# --- New Helper Function for File Search ---
 
 def _find_latest_csv(pattern: str = "CSV/session_log_*.csv") -> str | None:
-    """Finds the most recently modified file matching the pattern in a subdirectory."""
     try:
-        # Get all matching files.
-        # By omitting the leading /, it correctly looks for a 'CSV' directory
-        # within the current working directory.
         files = glob.glob(pattern)
-
         if not files:
             return None
-
-        # Sort by modification time (st_mtime)
         latest_file = max(files, key=os.path.getmtime)
         return latest_file
     except Exception as e:
         print(f"Warning: Could not automatically find latest CSV file. Error: {e}")
         return None
-# --- End New Helper Function ---
 
 
 def parse_data_cell(s: str):
-    """Parse the 'data' column which may contain Python dicts with numpy array(...) prints.
-    Strategy: try JSON, then AST; if that fails, sanitize away numpy 'array(...)' wrappers and retry AST.
-    """
     if not s:
         return {}
     s = s.strip()
-
-    # First: JSON (works if double quotes and lists)
     try:
-        import json
         return json.loads(s)
     except Exception:
         pass
-
-    # Second: AST (works for Python-literal dicts/lists, but not 'array(...)')
-    import ast
     try:
         return ast.literal_eval(s)
     except Exception:
         pass
 
-    # Third: sanitize numpy array(...) textual form → lists
     def _sanitize_numpy_arrays(text: str) -> str:
-        text = re.sub(r'\barray\(', '', text)  # remove leading "array("
-        text = re.sub(r',\s*dtype=[^)]+', '', text)  # drop ", dtype=float32" etc.
-        while '])' in text:  # close brackets: "])" -> "]"
+        text = re.sub(r'\barray\(', '', text)
+        text = re.sub(r',\s*dtype=[^)]+', '', text)
+        while '])' in text:
             text = text.replace('])', ']')
         return text
 
@@ -68,17 +48,10 @@ def parse_data_cell(s: str):
         sanitized = _sanitize_numpy_arrays(s)
         return ast.literal_eval(sanitized)
     except Exception:
-        # Last resort: give up; caller should treat as no data
         return {}
 
 
 def _pose_entries_from_value(value: Any) -> Iterable[Tuple[str | None, np.ndarray]]:
-    """
-    Yields (tag_id, H) tuples:
-      - value is a 4x4 -> yield (None, H)
-      - value is {tag_id: 4x4} -> yield (str(tag_id), H) for each
-    """
-    # Try single 4x4 first
     try:
         H = np.array(value, dtype=float)
         if H.shape == (4, 4):
@@ -87,7 +60,6 @@ def _pose_entries_from_value(value: Any) -> Iterable[Tuple[str | None, np.ndarra
     except Exception:
         pass
 
-    # Dict of tag_id -> 4x4
     if isinstance(value, dict):
         for tag_id, Hlike in value.items():
             try:
@@ -107,17 +79,15 @@ def extract_points(csv_path: str):
             evt = (row.get("event") or "").strip()
             ts = (row.get("timestamp") or "").strip()
 
-            data = parse_data_cell(row.get("data", ""))  # <-- now robust
+            data = parse_data_cell(row.get("data", ""))
             if not isinstance(data, dict):
                 continue
             if "pose" not in data:
                 continue
 
-            # Pose can be a 4x4 OR a {tag_id: 4x4} dict
             for tag_id, H in _pose_entries_from_value(data["pose"]):
                 x, y, z = float(H[0, 3]), float(H[1, 3]), float(H[2, 3])
 
-                # classify: if the row is a camera snapshot or src is a serial → camera
                 kind = "camera" if evt == "tag_pose_snapshot" or src.lower() != "robot" else "robot"
 
                 points.append({
@@ -125,7 +95,7 @@ def extract_points(csv_path: str):
                     "source": src,
                     "kind": kind,
                     "event": evt,
-                    "tag_id": tag_id,  # None for single pose; "2"/"7"/... for per-tag
+                    "tag_id": tag_id,
                     "x": x, "y": y, "z": z,
                 })
     return points
@@ -171,7 +141,6 @@ def build_figure(points: List[Dict[str, Any]],
         ))
 
     if cams:
-        # group either by (source) or by (source, tag_id)
         if group_by_tag:
             keyfunc = lambda p: (p["source"], p.get("tag_id"))
         else:
@@ -227,14 +196,8 @@ def build_figure(points: List[Dict[str, Any]],
 
 
 def main():
-    # --- 1. Argument Parser Setup ---
-    # Make --csv required=False
     ap = argparse.ArgumentParser(description="Plot 3D robot & camera observations from session log CSV")
     ap.add_argument("--csv", required=False, help="Path to session_log_*.csv (defaults to latest)")
-    ap.add_argument("--save", default=None, help="Optional: save interactive HTML to this path")
-
-    # Change action="store_true" to store_false and adjust default for clarity, or flip logic
-    # We will flip the logic in the function calls below for simplicity
     ap.add_argument("--group-by-tag", action="store_true", default=True,
                     help="Split camera traces by tag_id (default: ON)")
     ap.add_argument("--robot-lines", action="store_true", default=True,
@@ -244,7 +207,6 @@ def main():
     ap.add_argument("--verbose", action="store_true", help="Print counts by source")
     args = ap.parse_args()
 
-    # --- 2. Automatic CSV Path Handling ---
     csv_path = args.csv
     if not csv_path:
         csv_path = _find_latest_csv("CSV/session_log_*.csv")
@@ -254,7 +216,6 @@ def main():
             return
         print(f"Automatically selected latest CSV file: {csv_path}")
 
-    # --- 3. Extract and Plot Data ---
     points = extract_points(csv_path)
     print(f"Loaded {len(points)} poses from {Path(csv_path).name}")
 
@@ -270,23 +231,20 @@ def main():
         print("No pose data found in CSV.")
         return
 
-    # --- 4. Flag Logic (Ensure desired defaults: Robot Lines ON, Camera Lines OFF, Group OFF) ---
     fig = build_figure(
         points,
-        # Default: connect_robot=True. If --no-robot-lines is passed, it becomes False.
-        connect_robot= args.robot_lines,
-        # Default: connect_cameras=False. If --camera-lines is passed, it becomes True.
+        connect_robot=args.robot_lines,
         connect_cameras=args.camera_lines,
-        # Default: group_by_tag=False. If --group-by-tag is passed, it becomes True.
         group_by_tag=args.group_by_tag,
     )
 
-    if args.save:
-        fig.write_html(args.save)
-        print(f"Saved interactive HTML to: {args.save}")
-
-    # Use fig.show() which is the default for Plotly
-    # Note: If you encounter the UserWarning again, refer to the previous chat answer to save the plot.
+    # --- always save next to CSV with same name ---
+    csv_path_obj = Path(csv_path)
+    html_path = csv_path_obj.with_suffix(".html")  # CSV/session_log_2025-11-05_10-00-00.html
+    if html_path.exists():
+        print(f"HTML already exists, overwriting: {html_path}")
+    fig.write_html(html_path)
+    print(f"Saved interactive HTML to: {html_path}")
     fig.show()
 
 
