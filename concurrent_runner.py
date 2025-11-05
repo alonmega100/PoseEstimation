@@ -184,10 +184,26 @@ def vision_processing_thread(
         while not stop_event.is_set():
             try:
                 vis_img, H0i_dict = processor.process_frame()
-
                 # update latest image
                 with state_lock:
                     shared_state["vision_image"][serial_num] = vis_img
+
+                # --- normalize tag poses to world (from this camera) ---
+                # processor.process_frame() is already giving you tag poses relative to WORLD_TAG
+                # BUT we still guard here in case world tag is missing in this frame.
+                if WORLD_TAG_ID in H0i_dict:
+                    # in your processor, H0i_dict[tag] = H_world_tag already, but let's keep the shape
+                    # if later you change the processor to return camera poses, this block is still useful
+                    normalized_dict = {}
+                    for tag_id, H_world_tag in H0i_dict.items():
+                        # optional flip check in WORLD frame:
+                        z_world = H_world_tag[:3, 2]
+                        if z_world[2] < 0:  # tag is upside-down relative to world Z
+                            H_world_tag = H_world_tag.copy()
+                            H_world_tag[:3, :3] = H_world_tag[:3, :3] @ np.diag([1, -1, -1])
+                        normalized_dict[tag_id] = H_world_tag
+                    H0i_dict = normalized_dict
+                # else: leave H0i_dict as-is (no world tag this frame)
 
                 # handle log commands for this camera
                 drained = []
@@ -199,9 +215,9 @@ def vision_processing_thread(
 
                 for (cmd_type, payload) in drained:
                     if cmd_type == "log" and not discard:
-                        # only log if not discarding
                         log_event(serial_num, "tag_pose_snapshot", {"pose": H0i_dict})
                         with state_lock:
+                            # store the world-aligned, flip-corrected poses
                             shared_state["tag_pose_A"].update(H0i_dict)
                         logging.debug(f"Camera {serial_num}: logged {len(H0i_dict)} tag poses")
 
