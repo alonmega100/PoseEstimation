@@ -4,11 +4,35 @@ import json
 import ast
 import argparse
 from typing import Dict, Any, List, Tuple, Iterable
-from typing import Iterable, Tuple, Any
-import numpy as np
 import numpy as np
 import plotly.graph_objects as go
 import re
+import os
+import glob  # New import for file searching
+from pathlib import Path  # New import for modern path handling
+
+
+# --- New Helper Function for File Search ---
+
+def _find_latest_csv(pattern: str = "CSV/session_log_*.csv") -> str | None:
+    """Finds the most recently modified file matching the pattern in a subdirectory."""
+    try:
+        # Get all matching files.
+        # By omitting the leading /, it correctly looks for a 'CSV' directory
+        # within the current working directory.
+        files = glob.glob(pattern)
+
+        if not files:
+            return None
+
+        # Sort by modification time (st_mtime)
+        latest_file = max(files, key=os.path.getmtime)
+        return latest_file
+    except Exception as e:
+        print(f"Warning: Could not automatically find latest CSV file. Error: {e}")
+        return None
+# --- End New Helper Function ---
+
 
 def parse_data_cell(s: str):
     """Parse the 'data' column which may contain Python dicts with numpy array(...) prints.
@@ -33,14 +57,10 @@ def parse_data_cell(s: str):
         pass
 
     # Third: sanitize numpy array(...) textual form → lists
-    # examples:
-    #   array([[1,2],[3,4]])            -> [[1,2],[3,4]]
-    #   array([...], dtype=float32)     -> [...]
-    # Works even when nested inside dicts: {'pose': {2: array([[...]]), 7: array([[...]])}}
     def _sanitize_numpy_arrays(text: str) -> str:
-        text = re.sub(r'\barray\(', '', text)                 # remove leading "array("
-        text = re.sub(r',\s*dtype=[^)]+', '', text)           # drop ", dtype=float32" etc.
-        while '])' in text:                                   # close brackets: "])" -> "]"
+        text = re.sub(r'\barray\(', '', text)  # remove leading "array("
+        text = re.sub(r',\s*dtype=[^)]+', '', text)  # drop ", dtype=float32" etc.
+        while '])' in text:  # close brackets: "])" -> "]"
             text = text.replace('])', ']')
         return text
 
@@ -50,7 +70,6 @@ def parse_data_cell(s: str):
     except Exception:
         # Last resort: give up; caller should treat as no data
         return {}
-
 
 
 def _pose_entries_from_value(value: Any) -> Iterable[Tuple[str | None, np.ndarray]]:
@@ -78,6 +97,7 @@ def _pose_entries_from_value(value: Any) -> Iterable[Tuple[str | None, np.ndarra
             except Exception:
                 continue
 
+
 def extract_points(csv_path: str):
     points = []
     with open(csv_path, "r", newline="") as f:
@@ -85,7 +105,7 @@ def extract_points(csv_path: str):
         for row in reader:
             src = (row.get("source") or "").strip()
             evt = (row.get("event") or "").strip()
-            ts  = (row.get("timestamp") or "").strip()
+            ts = (row.get("timestamp") or "").strip()
 
             data = parse_data_cell(row.get("data", ""))  # <-- now robust
             if not isinstance(data, dict):
@@ -105,10 +125,11 @@ def extract_points(csv_path: str):
                     "source": src,
                     "kind": kind,
                     "event": evt,
-                    "tag_id": tag_id,   # None for single pose; "2"/"7"/... for per-tag
+                    "tag_id": tag_id,  # None for single pose; "2"/"7"/... for per-tag
                     "x": x, "y": y, "z": z,
                 })
     return points
+
 
 def build_figure(points: List[Dict[str, Any]],
                  connect_robot: bool = True,
@@ -123,13 +144,14 @@ def build_figure(points: List[Dict[str, Any]],
         p["_idx"] = i
 
     robots = [p for p in points if p["kind"] == "robot"]
-    cams   = [p for p in points if p["kind"] == "camera"]
+    cams = [p for p in points if p["kind"] == "camera"]
 
     base_colors = [
         "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
         "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
         "#bcbd22", "#17becf"
     ]
+
     def color_for(idx: int) -> str:
         return base_colors[idx % len(base_colors)]
 
@@ -203,17 +225,39 @@ def build_figure(points: List[Dict[str, Any]],
     )
     return fig
 
+
 def main():
+    # --- 1. Argument Parser Setup ---
+    # Make --csv required=False
     ap = argparse.ArgumentParser(description="Plot 3D robot & camera observations from session log CSV")
-    ap.add_argument("--csv", required=True, help="Path to session_log_*.csv")
+    ap.add_argument("--csv", required=False, help="Path to session_log_*.csv (defaults to latest)")
     ap.add_argument("--save", default=None, help="Optional: save interactive HTML to this path")
-    ap.add_argument("--group-by-tag", action="store_true", help="Split camera traces by tag_id")
-    ap.add_argument("--no-robot-lines", action="store_true", help="Do not connect robot points with lines")
-    ap.add_argument("--camera-lines", action="store_true", help="Connect camera points with lines")
+
+    # Change action="store_true" to store_false and adjust default for clarity, or flip logic
+    # We will flip the logic in the function calls below for simplicity
+    ap.add_argument("--group-by-tag", action="store_true", default=True,
+                    help="Split camera traces by tag_id (default: ON)")
+    ap.add_argument("--robot-lines", action="store_true", default=True,
+                    help="Connect robot points with lines (default: ON)")
+    ap.add_argument("--camera-lines", action="store_true", default=True,
+                    help="Connect camera points with lines (default: ON)")
     ap.add_argument("--verbose", action="store_true", help="Print counts by source")
     args = ap.parse_args()
 
-    points = extract_points(args.csv)
+    # --- 2. Automatic CSV Path Handling ---
+    csv_path = args.csv
+    if not csv_path:
+        csv_path = _find_latest_csv("CSV/session_log_*.csv")
+        if not csv_path:
+            print("Error: No CSV file specified and no 'session_log_*.csv' found in the current directory.")
+            ap.print_help()
+            return
+        print(f"Automatically selected latest CSV file: {csv_path}")
+
+    # --- 3. Extract and Plot Data ---
+    points = extract_points(csv_path)
+    print(f"Loaded {len(points)} poses from {Path(csv_path).name}")
+
     if args.verbose:
         from collections import Counter
         total = len(points)
@@ -226,10 +270,14 @@ def main():
         print("No pose data found in CSV.")
         return
 
+    # --- 4. Flag Logic (Ensure desired defaults: Robot Lines ON, Camera Lines OFF, Group OFF) ---
     fig = build_figure(
         points,
-        connect_robot=not args.no_robot_lines,
+        # Default: connect_robot=True. If --no-robot-lines is passed, it becomes False.
+        connect_robot= args.robot_lines,
+        # Default: connect_cameras=False. If --camera-lines is passed, it becomes True.
         connect_cameras=args.camera_lines,
+        # Default: group_by_tag=False. If --group-by-tag is passed, it becomes True.
         group_by_tag=args.group_by_tag,
     )
 
@@ -237,7 +285,10 @@ def main():
         fig.write_html(args.save)
         print(f"Saved interactive HTML to: {args.save}")
 
+    # Use fig.show() which is the default for Plotly
+    # Note: If you encounter the UserWarning again, refer to the previous chat answer to save the plot.
     fig.show()
+
 
 if __name__ == "__main__":
     main()
