@@ -14,6 +14,24 @@ from april_tag_processor import (
     AprilTagProcessor, WORLD_TAG_ID, FRAME_W, FRAME_H,
     OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE
 )
+import json
+
+POSE_COLS = [f"pose_{r}{c}" for r in range(4) for c in range(4)]
+
+def is_4x4_matrix(obj):
+    return (
+        isinstance(obj, (list, tuple)) and
+        len(obj) == 4 and
+        all(isinstance(row, (list, tuple)) and len(row) == 4 for row in obj)
+    )
+
+def matrix_to_flat_dict(prefix, mat):
+    """mat is 4x4 (list of lists). returns dict: {f'{prefix}_00': val, ...}"""
+    out = {}
+    for r in range(4):
+        for c in range(4):
+            out[f"{prefix}_{r}{c}"] = mat[r][c]
+    return out
 
 # -----------------------------
 # Config & Logging
@@ -289,7 +307,6 @@ def run_concurrent_system(controller: PandaController):
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
     next_log_time = time.perf_counter()
 
-    i = -1
     try:
 
         while not stop_event.is_set():
@@ -335,7 +352,7 @@ def run_concurrent_system(controller: PandaController):
                 stop_event.set()
                 break
 
-            time.sleep(0.001)  # tiny sleep to keep CPU sane
+            time.sleep(0.01)  # tiny sleep to keep CPU sane
 
     except KeyboardInterrupt:
         logging.info("KeyboardInterrupt in main; stopping...")
@@ -360,24 +377,100 @@ def run_concurrent_system(controller: PandaController):
         # Save collected logs to disk
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         log_filename = f"CSV/session_log_{timestamp}.csv"
+
+        POSE_COLS = [f"pose_{r}{c}" for r in range(4) for c in range(4)]
+
+        def is_4x4_matrix(obj):
+            import numpy as _np
+            # accept list-of-lists AND np.array
+            if isinstance(obj, _np.ndarray):
+                return obj.shape == (4, 4)
+            return (
+                isinstance(obj, (list, tuple)) and
+                len(obj) == 4 and
+                all(isinstance(row, (list, tuple)) and len(row) == 4 for row in obj)
+            )
+
+        def matrix_to_flat_dict(prefix, mat):
+            import numpy as _np
+            mat = _np.array(mat)  # safe conversion
+            out = {}
+            for r in range(4):
+                for c in range(4):
+                    out[f"{prefix}_{r}{c}"] = float(mat[r, c])
+            return out
+
+        import json
+        import numpy as np
+
+        rows_to_write = []
+
+        with log_lock:
+            for entry in run_logs:
+                ts = entry.get("timestamp")
+                src = entry.get("source")
+                ev = entry.get("event")
+                data = entry.get("data", {})
+
+                # 1) data = {"pose": 4x4}
+                if isinstance(data, dict) and "pose" in data and is_4x4_matrix(data["pose"]):
+                    flat_pose = matrix_to_flat_dict("pose", data["pose"])
+                    rows_to_write.append({
+                        "timestamp": ts,
+                        "source": src,
+                        "event": ev,
+                        **flat_pose
+                    })
+                    continue
+
+                # 2) data = {"pose": {tag_id: 4x4 or np.array, ...}}
+                if isinstance(data, dict) and "pose" in data and isinstance(data["pose"], dict):
+                    for tag_id, mat in data["pose"].items():
+                        if is_4x4_matrix(mat):
+                            flat_pose = matrix_to_flat_dict("pose", mat)
+                            rows_to_write.append({
+                                "timestamp": ts,
+                                "source": src,
+                                "event": ev,
+                                "tag_id": str(tag_id),
+                                **flat_pose
+                            })
+                        else:
+                            # still something per-tag, but not 4x4 — serialize safely
+                            if isinstance(mat, np.ndarray):
+                                mat = mat.tolist()
+                            rows_to_write.append({
+                                "timestamp": ts,
+                                "source": src,
+                                "event": ev,
+                                "tag_id": str(tag_id),
+                                "raw_data": json.dumps(mat)
+                            })
+                    continue
+
+                # 3) everything else
+                # make data json-safe
+                safe_data = data
+                if isinstance(safe_data, np.ndarray):
+                    safe_data = safe_data.tolist()
+                rows_to_write.append({
+                    "timestamp": ts,
+                    "source": src,
+                    "event": ev,
+                    "raw_data": json.dumps(safe_data) if safe_data else ""
+                })
+
+        fieldnames = ["timestamp", "source", "event", "tag_id", "raw_data"] + POSE_COLS
+
         try:
             with open(log_filename, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["timestamp", "source", "event", "data"])
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
-                with log_lock:
-                    for entry in run_logs:
-                        writer.writerow(entry)
-            logging.info(f"Saved {len(run_logs)} log entries to {log_filename}")
+                for row in rows_to_write:
+                    writer.writerow(row)
+            logging.info(f"Saved {len(rows_to_write)} log rows to {log_filename}")
         except Exception as e:
             logging.error(f"Failed to save run logs: {e}")
 
         cv2.destroyAllWindows()
         logging.info("System fully shut down.")
-
-
-# -----------------------------
-# Example entry (uncomment when integrating)
-# -----------------------------
-# if __name__ == "__main__":
-#     ctrl = PandaController(ROBOT_IP)
-#     run_concurrent_system(ctrl)

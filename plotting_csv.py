@@ -12,6 +12,9 @@ import glob
 from pathlib import Path
 
 
+# -----------------------------------------------------------
+# Helpers for finding latest CSV
+# -----------------------------------------------------------
 def _find_latest_csv(pattern: str = "CSV/session_log_*.csv") -> str | None:
     try:
         files = glob.glob(pattern)
@@ -24,19 +27,26 @@ def _find_latest_csv(pattern: str = "CSV/session_log_*.csv") -> str | None:
         return None
 
 
+# -----------------------------------------------------------
+# Old-style parser (for backward compatibility)
+# -----------------------------------------------------------
 def parse_data_cell(s: str):
+    """Parse the old 'data' column which could be JSON, literal, or numpy-ish."""
     if not s:
         return {}
     s = s.strip()
+    # try JSON
     try:
         return json.loads(s)
     except Exception:
         pass
+    # try literal
     try:
         return ast.literal_eval(s)
     except Exception:
         pass
 
+    # last attempt: strip numpy array(...) noise
     def _sanitize_numpy_arrays(text: str) -> str:
         text = re.sub(r'\barray\(', '', text)
         text = re.sub(r',\s*dtype=[^)]+', '', text)
@@ -52,6 +62,10 @@ def parse_data_cell(s: str):
 
 
 def _pose_entries_from_value(value: Any) -> Iterable[Tuple[str | None, np.ndarray]]:
+    """
+    Old-style: value could be a single 4x4, or a dict[tag] = 4x4.
+    We yield (tag_id, H).
+    """
     try:
         H = np.array(value, dtype=float)
         if H.shape == (4, 4):
@@ -70,7 +84,32 @@ def _pose_entries_from_value(value: Any) -> Iterable[Tuple[str | None, np.ndarra
                 continue
 
 
+# -----------------------------------------------------------
+# NEW: flat CSV -> 4x4
+# -----------------------------------------------------------
+POSE_COLS = [f"pose_{r}{c}" for r in range(4) for c in range(4)]
+
+
+def _row_has_flat_pose(row: Dict[str, str]) -> bool:
+    return all(col in row and row[col] not in (None, "", "null", "None") for col in POSE_COLS)
+
+
+def _flat_pose_from_row(row: Dict[str, str]) -> np.ndarray:
+    vals = [float(row[f"pose_{r}{c}"]) for r in range(4) for c in range(4)]
+    H = np.array(vals, dtype=float).reshape(4, 4)
+    return H
+
+
+# -----------------------------------------------------------
+# Extract points from CSV
+# -----------------------------------------------------------
 def extract_points(csv_path: str):
+    """
+    Returns list of dicts:
+    {
+       timestamp, source, kind, event, tag_id, x, y, z
+    }
+    """
     points = []
     with open(csv_path, "r", newline="") as f:
         reader = csv.DictReader(f)
@@ -79,7 +118,31 @@ def extract_points(csv_path: str):
             evt = (row.get("event") or "").strip()
             ts = (row.get("timestamp") or "").strip()
 
-            data = parse_data_cell(row.get("data", ""))
+            # 1) NEW format: flat pose columns
+            if _row_has_flat_pose(row):
+                H = _flat_pose_from_row(row)
+                x, y, z = float(H[0, 3]), float(H[1, 3]), float(H[2, 3])
+
+                tag_id = (row.get("tag_id") or "").strip() or None
+                # assume cameras produce tag_pose_snapshot, robot produces pose_snapshot
+                if evt == "tag_pose_snapshot" or (src and src.lower() != "robot"):
+                    kind = "camera"
+                else:
+                    kind = "robot"
+
+                points.append({
+                    "timestamp": ts,
+                    "source": src,
+                    "kind": kind,
+                    "event": evt,
+                    "tag_id": tag_id,
+                    "x": x, "y": y, "z": z,
+                })
+                continue
+
+            # 2) OLD format: "data" (or "raw_data") column with JSON/dict/etc.
+            data_str = row.get("data") or row.get("raw_data") or ""
+            data = parse_data_cell(data_str)
             if not isinstance(data, dict):
                 continue
             if "pose" not in data:
@@ -98,9 +161,13 @@ def extract_points(csv_path: str):
                     "tag_id": tag_id,
                     "x": x, "y": y, "z": z,
                 })
+
     return points
 
 
+# -----------------------------------------------------------
+# Plotting
+# -----------------------------------------------------------
 def build_figure(points: List[Dict[str, Any]],
                  connect_robot: bool = True,
                  connect_cameras: bool = False,
@@ -110,6 +177,7 @@ def build_figure(points: List[Dict[str, Any]],
         fig.update_layout(title="No pose data found")
         return fig
 
+    # index for ordering
     for i, p in enumerate(points):
         p["_idx"] = i
 
@@ -125,6 +193,7 @@ def build_figure(points: List[Dict[str, Any]],
     def color_for(idx: int) -> str:
         return base_colors[idx % len(base_colors)]
 
+    # --- robot trace ---
     if robots:
         robots_sorted = sorted(robots, key=lambda p: p["_idx"])
         fig.add_trace(go.Scatter3d(
@@ -140,6 +209,7 @@ def build_figure(points: List[Dict[str, Any]],
                           "<br>%{text}<extra>Robot</extra>",
         ))
 
+    # --- camera traces ---
     if cams:
         if group_by_tag:
             keyfunc = lambda p: (p["source"], p.get("tag_id"))
@@ -165,7 +235,7 @@ def build_figure(points: List[Dict[str, Any]],
             color = color_for(source_index[src])
 
             plist_sorted = sorted(plist, key=lambda p: p["_idx"])
-            label = f"Camera {src}" if tag in (None, "", "None") else f"Cam {src} • tag {tag}"
+            label = f"Camera {src}" if not tag else f"Cam {src} • tag {tag}"
 
             fig.add_trace(go.Scatter3d(
                 x=[p["x"] for p in plist_sorted],
@@ -238,9 +308,9 @@ def main():
         group_by_tag=args.group_by_tag,
     )
 
-    # --- always save next to CSV with same name ---
+    # save next to CSV
     csv_path_obj = Path(csv_path)
-    html_path = csv_path_obj.with_suffix(".html")  # CSV/session_log_2025-11-05_10-00-00.html
+    html_path = csv_path_obj.with_suffix(".html")
     if html_path.exists():
         print(f"HTML already exists, overwriting: {html_path}")
     fig.write_html(html_path)
