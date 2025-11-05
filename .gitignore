@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .idea/
 ransac.py
+# ignore all runtime data inside CSV
+CSV/*
+!CSV/.gitkeep
