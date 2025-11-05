@@ -112,7 +112,6 @@ def command_writer_thread(stop_event: threading.Event):
 
     logging.info("Command writer exiting")
 
-
 def robot_control_thread(controller: PandaController, stop_event: threading.Event):
     """
     Consumes robot commands and updates shared robot pose at high rate.
@@ -161,6 +160,7 @@ def robot_control_thread(controller: PandaController, stop_event: threading.Even
             # ---- If any log was requested, snapshot exactly once ----
             if got_log_request:
                 try:
+                    # controller.robot.update_robot_state()
                     current_H = controller.robot.get_pose()
                     with state_lock:
                         shared_state["robot_pose_R"] = current_H
@@ -359,7 +359,7 @@ def run_concurrent_system(controller: PandaController):
 
         # Save collected logs to disk
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_filename = f"session_log_{timestamp}.csv"
+        log_filename = f"CSV/session_log_{timestamp}.csv"
         try:
             with open(log_filename, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=["timestamp", "source", "event", "data"])
