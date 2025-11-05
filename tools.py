@@ -52,3 +52,24 @@ def pose_delta(Ha, Hb):
     pos_err = np.linalg.norm(pa - pb )
     ang_err = rot_geodesic_angle_deg(Ra, Rb)
     return pos_err, ang_err
+
+
+def is_4x4_matrix(obj):
+    import numpy as _np
+    # accept list-of-lists AND np.array
+    if isinstance(obj, _np.ndarray):
+        return obj.shape == (4, 4)
+    return (
+            isinstance(obj, (list, tuple)) and
+            len(obj) == 4 and
+            all(isinstance(row, (list, tuple)) and len(row) == 4 for row in obj)
+    )
+
+
+def matrix_to_flat_dict(prefix, mat):
+    mat = np.array(mat)  # safe conversion
+    out = {}
+    for r in range(4):
+        for c in range(4):
+            out[f"{prefix}_{r}{c}"] = float(mat[r, c])
+    return out
