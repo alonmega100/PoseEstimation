@@ -5,4 +5,6 @@ __pycache__/
 ransac.py
 # ignore all runtime data inside CSV
 CSV/*
-!CSV/.gitkeep
+!CSV/.gitkeepDATA/
+DATA/
+DATA/
