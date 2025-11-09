@@ -6,3 +6,5 @@ ransac.py
 # ignore all runtime data inside CSV
 CSV/*
 !CSV/.gitkeepDATA/
+DATA/
+DATA/
