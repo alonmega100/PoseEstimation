@@ -22,7 +22,7 @@ from hdf5_writer import HDF5Writer
 # Config
 # -------------------------------------------------
 CAMERA_SERIALS = ["839112062097", "845112070338"]
-TARGET_LOG_HZ = 30.0
+TARGET_LOG_HZ = 30.0     # robot logger rate
 LOG_INTERVAL = 1.0 / TARGET_LOG_HZ
 
 POSE_COLS = [f"pose_{r}{c}" for r in range(4) for c in range(4)]
@@ -56,23 +56,13 @@ def command_writer_thread(stop_event: threading.Event):
     logging.info("Command writer started")
     while not stop_event.is_set():
         try:
-            cmd = input("Type command (q=quit, l=log): ").strip()
+            cmd = input("Type command (q=quit): ").strip()
             if not cmd:
                 continue
 
             if cmd in ("q", "quit", "exit"):
                 stop_event.set()
                 break
-
-            if cmd in ("l", "log"):
-                # broadcast log to cameras
-                for sn in CAMERA_SERIALS:
-                    try:
-                        command_queues[sn].put_nowait(("log", None))
-                    except queue.Full:
-                        logging.warning(f"Queue full for camera {sn}; drop 'log'")
-                # (we don't need to send to robot anymore, logger thread samples anyway)
-                continue
 
             # everything else goes to the robot as move
             try:
@@ -112,7 +102,6 @@ def robot_move_thread(
 
                 if cmd_type == "move":
                     move_cmds.append(payload)
-                # ignore 'log' here — logging is done by logger thread
 
             # run moves (may block)
             for raw in move_cmds:
@@ -144,7 +133,7 @@ def robot_move_thread(
 
 
 # -------------------------------------------------
-# Robot LOGGER thread (runs at fixed rate, even during moves)
+# Robot LOGGER thread (runs at fixed rate, dumps everything)
 # -------------------------------------------------
 def robot_logger_thread(
     controller: PandaController,
@@ -156,6 +145,7 @@ def robot_logger_thread(
 ):
     logging.info("Robot LOGGER thread started")
     period = 1.0 / hz
+
     while not stop_event.is_set():
         start_t = time.time()
         try:
@@ -168,12 +158,12 @@ def robot_logger_thread(
             H = controller.robot.get_pose()
             t = time.time()
 
-            # send to HDF5 (if enabled)
+            # ---- 1) push to HDF5
             try:
                 writer.add_robot_data(
                     state.q,
                     state.dq,
-                    np.zeros(6),     # placeholder for calculated force
+                    np.zeros(6),
                     state.tau_J,
                     H,
                     t
@@ -181,11 +171,29 @@ def robot_logger_thread(
             except Exception as e:
                 logging.error(f"Robot logger: failed to add robot data: {e}")
 
-            # also to CSV buffer
+            # ---- 2) push to CSV (make everything jsonable)
+            if not discard:
+                def to_list(x):
+                    if isinstance(x, np.ndarray):
+                        return x.tolist()
+                    if hasattr(x, "tolist"):
+                        return x.tolist()
+                    return list(x)  # assume iterable
+
+                log_event(
+                    "robot",
+                    "pose_snapshot",
+                    {
+                        "pose": H.tolist(),
+                        "q": to_list(state.q),
+                        "dq": to_list(state.dq),
+                        "tau_J": to_list(state.tau_J),
+                    },
+                )
+
+            # update shared pose
             with state_lock:
                 shared_state["robot_pose_R"] = H
-            if not discard:
-                log_event("robot", "pose_snapshot", {"pose": H.tolist()})
 
         except Exception as e:
             logging.warning(f"Robot logger: read failed: {e}")
@@ -196,9 +204,9 @@ def robot_logger_thread(
 
     logging.info("Robot LOGGER thread exiting")
 
-
 # -------------------------------------------------
 # Vision (AprilTag) threads
+#   log every frame
 # -------------------------------------------------
 def vision_processing_thread(
     serial_num: str,
@@ -228,7 +236,7 @@ def vision_processing_thread(
                 with state_lock:
                     shared_state["vision_image"][serial_num] = vis_img
 
-                # fix tag orientation if z is flipped
+                # normalize tag orientation if needed
                 if WORLD_TAG_ID in H0i_dict:
                     normalized_dict = {}
                     for tag_id, H_world_tag in H0i_dict.items():
@@ -239,20 +247,11 @@ def vision_processing_thread(
                         normalized_dict[tag_id] = H_world_tag
                     H0i_dict = normalized_dict
 
-                # handle queued log commands for this camera
-                drained = []
-                while True:
-                    try:
-                        drained.append(command_queues[serial_num].get_nowait())
-                    except queue.Empty:
-                        break
-
-                for (cmd_type, payload) in drained:
-                    if cmd_type == "log" and not discard:
-                        log_event(serial_num, "tag_pose_snapshot", {"pose": H0i_dict})
-                        with state_lock:
-                            shared_state["tag_pose_A"].update(H0i_dict)
-                        logging.debug(f"Camera {serial_num}: logged {len(H0i_dict)} tag poses")
+                # log this frame’s tag poses (even if identical)
+                if not discard:
+                    log_event(serial_num, "tag_pose_snapshot", {"pose": H0i_dict})
+                    with state_lock:
+                        shared_state["tag_pose_A"].update(H0i_dict)
 
                 time.sleep(0.01)
                 backoff = 0.01
@@ -290,6 +289,11 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     run_id = datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
     writer.add_run(run_id, force=0, dx=0, dy=0, angle=0)
 
+    # you said: "if a vision thread is running -> we get a camera log every frame"
+    # so we just keep writer on
+    writer.start_writing()
+    writer.to_file_enabled = True
+
     run_logs = []
     log_lock = threading.Lock()
 
@@ -315,11 +319,11 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     robot_log_t = threading.Thread(
         target=robot_logger_thread,
         name="RobotLogger",
-        args=(controller, stop_event, log_event, discard, writer),
+        args=(controller, stop_event, log_event, discard, writer, TARGET_LOG_HZ),
         daemon=True,
     )
 
-    # vision threads
+    # vision threads (now log every frame)
     vision_threads = [
         threading.Thread(
             target=vision_processing_thread,
@@ -348,31 +352,8 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     WIN = "Concurrent Vision Feed"
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
 
-    next_log_time = time.perf_counter()
-
     try:
         while not stop_event.is_set():
-            now = time.perf_counter()
-
-            # periodic log trigger (for cameras mainly)
-            if not discard and now >= next_log_time:
-                while next_log_time <= now:
-                    next_log_time += LOG_INTERVAL
-
-                log_event("command", "log_request", {"targets": CAMERA_SERIALS})
-
-                # enable capture in writer
-                writer.start_writing()
-                writer.to_file_enabled = True
-
-                for sn in CAMERA_SERIALS:
-                    try:
-                        command_queues[sn].put_nowait(("log", None))
-                    except queue.Full:
-                        logging.warning(f"Queue full for camera {sn}; drop 'log'")
-
-                continue
-
             # show combined camera view
             with state_lock:
                 images = [shared_state["vision_image"].get(sn) for sn in CAMERA_SERIALS]
@@ -418,18 +399,22 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                     ev = entry.get("event")
                     data = entry.get("data", {})
 
-                    # single pose
-                    if isinstance(data, dict) and "pose" in data and is_4x4_matrix(data["pose"]):
+                    # robot rows with full state
+                    if src == "robot" and isinstance(data, dict) and "pose" in data:
                         flat_pose = matrix_to_flat_dict("pose", data["pose"])
+                        # dump the rest to raw_data
+                        extras = data.copy()
+                        extras.pop("pose", None)
                         rows_to_write.append({
                             "timestamp": ts,
                             "source": src,
                             "event": ev,
+                            "raw_data": json.dumps(extras),
                             **flat_pose
                         })
                         continue
 
-                    # multi-tag pose dict
+                    # camera: multi-tag dict
                     if isinstance(data, dict) and "pose" in data and isinstance(data["pose"], dict):
                         for tag_id, mat in data["pose"].items():
                             if is_4x4_matrix(mat):
@@ -451,6 +436,17 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                                     "tag_id": str(tag_id),
                                     "raw_data": json.dumps(mat)
                                 })
+                        continue
+
+                    # single pose (rare here)
+                    if isinstance(data, dict) and "pose" in data and is_4x4_matrix(data["pose"]):
+                        flat_pose = matrix_to_flat_dict("pose", data["pose"])
+                        rows_to_write.append({
+                            "timestamp": ts,
+                            "source": src,
+                            "event": ev,
+                            **flat_pose
+                        })
                         continue
 
                     # fallback
