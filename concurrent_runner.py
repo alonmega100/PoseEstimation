@@ -2,37 +2,39 @@ import threading
 import time
 import logging
 import csv
-import datetime
 import queue
 import numpy as np
 import cv2
 from typing import Dict, Optional
+import os
+import datetime
+import json
 
 from panda_controller import PandaController, ROBOT_IP
 from april_tag_processor import (
     AprilTagProcessor, WORLD_TAG_ID, FRAME_W, FRAME_H,
     OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE
 )
-import json
 from tools import matrix_to_flat_dict, is_4x4_matrix
+from hdf5_writer import HDF5Writer
 
-POSE_COLS = [f"pose_{r}{c}" for r in range(4) for c in range(4)]
-
-# -----------------------------
+# -------------------------------------------------
 # Config
-# -----------------------------
+# -------------------------------------------------
 CAMERA_SERIALS = ["839112062097", "845112070338"]
 TARGET_LOG_HZ = 30.0
 LOG_INTERVAL = 1.0 / TARGET_LOG_HZ
+
+POSE_COLS = [f"pose_{r}{c}" for r in range(4) for c in range(4)]
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(threadName)s] %(message)s"
 )
 
-# -----------------------------
-# Shared state (global-ish)
-# -----------------------------
+# -------------------------------------------------
+# Shared state
+# -------------------------------------------------
 shared_state = {
     "tag_pose_A": {},
     "vision_image": {},
@@ -47,14 +49,10 @@ command_queues: Dict[str, queue.Queue] = {
 }
 
 
-# -----------------------------
-# Threads
-# -----------------------------
+# -------------------------------------------------
+# Command thread (stdin)
+# -------------------------------------------------
 def command_writer_thread(stop_event: threading.Event):
-    """
-    Reads stdin and enqueues commands.
-    (No 'd' anymore, because discard is decided beforehand.)
-    """
     logging.info("Command writer started")
     while not stop_event.is_set():
         try:
@@ -67,16 +65,13 @@ def command_writer_thread(stop_event: threading.Event):
                 break
 
             if cmd in ("l", "log"):
-                # user-triggered one-shot log
+                # broadcast log to cameras
                 for sn in CAMERA_SERIALS:
                     try:
                         command_queues[sn].put_nowait(("log", None))
                     except queue.Full:
                         logging.warning(f"Queue full for camera {sn}; drop 'log'")
-                try:
-                    command_queues["robot"].put_nowait(("log", None))
-                except queue.Full:
-                    logging.warning("Queue full for robot; drop 'log'")
+                # (we don't need to send to robot anymore, logger thread samples anyway)
                 continue
 
             # everything else goes to the robot as move
@@ -95,31 +90,31 @@ def command_writer_thread(stop_event: threading.Event):
     logging.info("Command writer exiting")
 
 
-def robot_control_thread(
+# -------------------------------------------------
+# Robot MOVE thread (blocking moves only)
+# -------------------------------------------------
+def robot_move_thread(
     controller: PandaController,
     stop_event: threading.Event,
-    log_event,              # function
-    discard: bool
+    discard: bool,
 ):
-    logging.info("Robot control started")
+    logging.info("Robot MOVE thread started")
     while not stop_event.is_set():
         try:
-            got_log_request = False
             move_cmds = []
 
-            # drain queue
+            # drain robot queue
             while True:
                 try:
                     cmd_type, payload = command_queues["robot"].get_nowait()
                 except queue.Empty:
                     break
 
-                if cmd_type == "log":
-                    got_log_request = True
-                elif cmd_type == "move":
+                if cmd_type == "move":
                     move_cmds.append(payload)
+                # ignore 'log' here — logging is done by logger thread
 
-            # execute moves
+            # run moves (may block)
             for raw in move_cmds:
                 raw = raw or ""
                 try:
@@ -135,34 +130,80 @@ def robot_control_thread(
                     except Exception as e:
                         logging.error(f"move_to_pose failed: {e}")
 
-            # log robot pose on request (only if not discarding)
-            if got_log_request and not discard:
-                try:
-                    current_H = controller.robot.get_pose()
-                    with state_lock:
-                        shared_state["robot_pose_R"] = current_H
-                    log_event("robot", "pose_snapshot", {"pose": current_H.tolist()})
-                    logging.debug("Robot logged current pose")
-                except Exception as e:
-                    logging.warning(f"get_pose failed: {e}")
-
-            if not got_log_request and not move_cmds:
+            if not move_cmds:
                 time.sleep(0.001)
 
         except KeyboardInterrupt:
             stop_event.set()
             break
         except Exception as e:
-            logging.exception(f"Robot thread error: {e}")
+            logging.exception(f"Robot MOVE thread error: {e}")
             time.sleep(0.005)
 
-    logging.info("Robot control exiting")
+    logging.info("Robot MOVE thread exiting")
 
 
+# -------------------------------------------------
+# Robot LOGGER thread (runs at fixed rate, even during moves)
+# -------------------------------------------------
+def robot_logger_thread(
+    controller: PandaController,
+    stop_event: threading.Event,
+    log_event,
+    discard: bool,
+    writer: HDF5Writer,
+    hz: float = 30.0,
+):
+    logging.info("Robot LOGGER thread started")
+    period = 1.0 / hz
+    while not stop_event.is_set():
+        start_t = time.time()
+        try:
+            # grab robot state regardless of motion
+            if hasattr(controller, "get_state_raw"):
+                state = controller.get_state_raw()
+            else:
+                state = controller.robot.get_state()
+
+            H = controller.robot.get_pose()
+            t = time.time()
+
+            # send to HDF5 (if enabled)
+            try:
+                writer.add_robot_data(
+                    state.q,
+                    state.dq,
+                    np.zeros(6),     # placeholder for calculated force
+                    state.tau_J,
+                    H,
+                    t
+                )
+            except Exception as e:
+                logging.error(f"Robot logger: failed to add robot data: {e}")
+
+            # also to CSV buffer
+            with state_lock:
+                shared_state["robot_pose_R"] = H
+            if not discard:
+                log_event("robot", "pose_snapshot", {"pose": H.tolist()})
+
+        except Exception as e:
+            logging.warning(f"Robot logger: read failed: {e}")
+
+        dt = time.time() - start_t
+        if dt < period:
+            time.sleep(period - dt)
+
+    logging.info("Robot LOGGER thread exiting")
+
+
+# -------------------------------------------------
+# Vision (AprilTag) threads
+# -------------------------------------------------
 def vision_processing_thread(
     serial_num: str,
     stop_event: threading.Event,
-    log_event,              # function
+    log_event,
     discard: bool
 ):
     logging.info(f"Vision processing started for {serial_num}")
@@ -184,28 +225,21 @@ def vision_processing_thread(
         while not stop_event.is_set():
             try:
                 vis_img, H0i_dict = processor.process_frame()
-                # update latest image
                 with state_lock:
                     shared_state["vision_image"][serial_num] = vis_img
 
-                # --- normalize tag poses to world (from this camera) ---
-                # processor.process_frame() is already giving you tag poses relative to WORLD_TAG
-                # BUT we still guard here in case world tag is missing in this frame.
+                # fix tag orientation if z is flipped
                 if WORLD_TAG_ID in H0i_dict:
-                    # in your processor, H0i_dict[tag] = H_world_tag already, but let's keep the shape
-                    # if later you change the processor to return camera poses, this block is still useful
                     normalized_dict = {}
                     for tag_id, H_world_tag in H0i_dict.items():
-                        # optional flip check in WORLD frame:
                         z_world = H_world_tag[:3, 2]
-                        if z_world[2] < 0:  # tag is upside-down relative to world Z
+                        if z_world[2] < 0:
                             H_world_tag = H_world_tag.copy()
                             H_world_tag[:3, :3] = H_world_tag[:3, :3] @ np.diag([1, -1, -1])
                         normalized_dict[tag_id] = H_world_tag
                     H0i_dict = normalized_dict
-                # else: leave H0i_dict as-is (no world tag this frame)
 
-                # handle log commands for this camera
+                # handle queued log commands for this camera
                 drained = []
                 while True:
                     try:
@@ -217,7 +251,6 @@ def vision_processing_thread(
                     if cmd_type == "log" and not discard:
                         log_event(serial_num, "tag_pose_snapshot", {"pose": H0i_dict})
                         with state_lock:
-                            # store the world-aligned, flip-corrected poses
                             shared_state["tag_pose_A"].update(H0i_dict)
                         logging.debug(f"Camera {serial_num}: logged {len(H0i_dict)} tag poses")
 
@@ -236,26 +269,30 @@ def vision_processing_thread(
         if processor is not None:
             try:
                 processor.release()
-            except Exception as e:
-                logging.debug(f"Release failed for {serial_num}: {e}")
+            except Exception:
+                pass
         logging.info(f"Vision processing exiting for {serial_num}")
 
 
-# -----------------------------
-# Main orchestration
-# -----------------------------
+# -------------------------------------------------
+# Main orchestrator
+# -------------------------------------------------
 def run_concurrent_system(controller: PandaController, discard: bool = False):
-    """
-    discard=False  -> normal: logs are collected and saved
-    discard=True   -> no periodic log commands, logger becomes no-op, and nothing is saved
-    """
     stop_event = threading.Event()
 
-    # per-run log buffer (not global anymore)
+    # make dirs
+    os.makedirs("DATA", exist_ok=True)
+    os.makedirs("CSV", exist_ok=True)
+
+    # HDF5 writer
+    writer = HDF5Writer("DATA/session.h5", "session")
+    writer.start()
+    run_id = datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
+    writer.add_run(run_id, force=0, dx=0, dy=0, angle=0)
+
     run_logs = []
     log_lock = threading.Lock()
 
-    # closure that respects discard
     def log_event(source: str, event: str, data: dict = None):
         if discard:
             return
@@ -268,13 +305,21 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
         with log_lock:
             run_logs.append(entry)
 
-    # Threads
-    robot_t = threading.Thread(
-        target=robot_control_thread,
-        name="RobotControl",
-        args=(controller, stop_event, log_event, discard),
-        daemon=True
+    # start robot threads
+    robot_move_t = threading.Thread(
+        target=robot_move_thread,
+        name="RobotMove",
+        args=(controller, stop_event, discard),
+        daemon=True,
     )
+    robot_log_t = threading.Thread(
+        target=robot_logger_thread,
+        name="RobotLogger",
+        args=(controller, stop_event, log_event, discard, writer),
+        daemon=True,
+    )
+
+    # vision threads
     vision_threads = [
         threading.Thread(
             target=vision_processing_thread,
@@ -284,6 +329,8 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
         )
         for sn in CAMERA_SERIALS
     ]
+
+    # command thread
     command_t = threading.Thread(
         target=command_writer_thread,
         name="CommandWriter",
@@ -291,43 +338,42 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
         daemon=True
     )
 
-    # Start
-    robot_t.start()
+    # start all
+    robot_move_t.start()
+    robot_log_t.start()
     for t in vision_threads:
         t.start()
     command_t.start()
 
-    # UI / main loop
     WIN = "Concurrent Vision Feed"
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
+
     next_log_time = time.perf_counter()
 
     try:
         while not stop_event.is_set():
             now = time.perf_counter()
 
-            # periodic logging only if not discarding
+            # periodic log trigger (for cameras mainly)
             if not discard and now >= next_log_time:
                 while next_log_time <= now:
                     next_log_time += LOG_INTERVAL
 
-                # record the request
-                log_event("command", "log_request", {"targets": ["robot"] + CAMERA_SERIALS})
+                log_event("command", "log_request", {"targets": CAMERA_SERIALS})
 
-                # fan out to threads
+                # enable capture in writer
+                writer.start_writing()
+                writer.to_file_enabled = True
+
                 for sn in CAMERA_SERIALS:
                     try:
                         command_queues[sn].put_nowait(("log", None))
                     except queue.Full:
                         logging.warning(f"Queue full for camera {sn}; drop 'log'")
-                try:
-                    command_queues["robot"].put_nowait(("log", None))
-                except queue.Full:
-                    logging.warning("Queue full for robot; drop 'log'")
 
                 continue
 
-            # show images
+            # show combined camera view
             with state_lock:
                 images = [shared_state["vision_image"].get(sn) for sn in CAMERA_SERIALS]
             images = [img for img in images if img is not None]
@@ -349,26 +395,17 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
 
             time.sleep(0.01)
 
-    except KeyboardInterrupt:
-        logging.info("KeyboardInterrupt in main; stopping...")
-        stop_event.set()
-    except Exception as e:
-        logging.exception(f"Main loop error: {e}")
-        stop_event.set()
     finally:
         logging.info("Shutting down...")
-        # wait for threads
-        for _ in range(50):
-            if not any(t.is_alive() for t in ([robot_t] + vision_threads + [command_t])):
-                break
-            time.sleep(0.01)
+        stop_event.set()
 
-        robot_t.join(timeout=1.0)
+        robot_move_t.join(timeout=1.0)
+        robot_log_t.join(timeout=1.0)
         for t in vision_threads:
             t.join(timeout=1.0)
         command_t.join(timeout=1.0)
 
-        # save only if not discarding
+        # write CSV
         if not discard:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             log_filename = f"CSV/session_log_{timestamp}.csv"
@@ -381,7 +418,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                     ev = entry.get("event")
                     data = entry.get("data", {})
 
-                    # 1) data = {"pose": 4x4}
+                    # single pose
                     if isinstance(data, dict) and "pose" in data and is_4x4_matrix(data["pose"]):
                         flat_pose = matrix_to_flat_dict("pose", data["pose"])
                         rows_to_write.append({
@@ -392,7 +429,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                         })
                         continue
 
-                    # 2) data = {"pose": {tag_id: 4x4 or np.array, ...}}
+                    # multi-tag pose dict
                     if isinstance(data, dict) and "pose" in data and isinstance(data["pose"], dict):
                         for tag_id, mat in data["pose"].items():
                             if is_4x4_matrix(mat):
@@ -416,7 +453,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                                 })
                         continue
 
-                    # 3) everything else
+                    # fallback
                     safe_data = data
                     if isinstance(safe_data, np.ndarray):
                         safe_data = safe_data.tolist()
@@ -430,13 +467,19 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
             fieldnames = ["timestamp", "source", "event", "tag_id", "raw_data"] + POSE_COLS
             try:
                 with open(log_filename, "w", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=fieldnames)
-                    writer.writeheader()
+                    csv_writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    csv_writer.writeheader()
                     for row in rows_to_write:
-                        writer.writerow(row)
+                        csv_writer.writerow(row)
                 logging.info(f"Saved {len(rows_to_write)} log rows to {log_filename}")
             except Exception as e:
                 logging.error(f"Failed to save run logs: {e}")
+
+        # close HDF5
+        try:
+            writer.stop()
+        except Exception as e:
+            logging.error(f"Failed to stop HDF5 writer: {e}")
 
         cv2.destroyAllWindows()
         logging.info("System fully shut down.")

@@ -22,6 +22,7 @@ class PandaController:
         self.ROBOT_IP = robot_ip
         self.speed_factor = default_speed_factor
         self.robot = self._connect_to_robot()
+
         print(f"[config] Current speed factor is {self.speed_factor:.2f}")
 
     def _connect_to_robot(self):
@@ -48,6 +49,11 @@ class PandaController:
         print(f"Position [m]: x={pos[0]:+.4f}, y={pos[1]:+.4f}, z={pos[2]:+.4f}")
         print(f"Rotation [deg]: yaw={euler_deg[0]:+.2f}, pitch={euler_deg[1]:+.2f}, roll={euler_deg[2]:+.2f}")
         print("-" * 60)
+
+    # in PandaController
+    def get_state_raw(self):
+        """Return the underlying panda_py state so we can log it."""
+        return self.robot.get_state()  # panda_py.Panda already has this, like your friend's code
 
     def reset_position(self):
         """Moves the robot to its defined start position."""
