@@ -73,3 +73,9 @@ def matrix_to_flat_dict(prefix, mat):
         for c in range(4):
             out[f"{prefix}_{r}{c}"] = float(mat[r, c])
     return out
+
+
+def list_of_movements_generator(num_of_commands):
+    pass
+
+

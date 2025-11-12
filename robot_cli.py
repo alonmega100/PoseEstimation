@@ -63,8 +63,10 @@ def main():
         if command == "reset":
             controller.reset_position()
         elif command == "con":
+            controller.reset_position()
             run_concurrent_system(controller)
         elif command == "cond":
+            controller.reset_position()
             run_concurrent_system(controller, discard=True)
         elif command == "pos":
             position_control_loop(controller)
