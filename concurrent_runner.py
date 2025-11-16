@@ -1,5 +1,6 @@
 import threading
 import time
+import sys, select
 import logging
 import csv
 import queue
@@ -9,15 +10,14 @@ from typing import Dict, Optional
 import os
 import datetime
 import json
-
 from panda_controller import PandaController, ROBOT_IP
 from april_tag_processor import (
     AprilTagProcessor, WORLD_TAG_ID, FRAME_W, FRAME_H,
     OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE
 )
-from tools import matrix_to_flat_dict, is_4x4_matrix
+from tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator
 from hdf5_writer import HDF5Writer
-
+NUM_OF_COMMANDS_TO_GENERATE = 5
 # -------------------------------------------------
 # Config
 # -------------------------------------------------
@@ -48,15 +48,31 @@ command_queues: Dict[str, queue.Queue] = {
     **{sn: queue.Queue(maxsize=100) for sn in CAMERA_SERIALS}
 }
 
-
 # -------------------------------------------------
 # Command thread (stdin)
 # -------------------------------------------------
+
 def command_writer_thread(stop_event: threading.Event):
     logging.info("Command writer started")
+    list_of_movements = list_of_movements_generator(NUM_OF_COMMANDS_TO_GENERATE)
+    list_of_movements = ["yaw 30 -z 0.05"] + list_of_movements
+    # list_of_movements = ["yaw 30 -z 0.05", "y 0.1 x 0.1"]
     while not stop_event.is_set():
         try:
-            cmd = input("Type command (q=quit): ").strip()
+            print("Type command (q=quit): ")
+
+            i, o, e = select.select([sys.stdin], [], [], 2)
+
+            if (i):
+                cmd = sys.stdin.readline().strip()
+            else:
+                try:
+                    cmd = list_of_movements.pop(0).strip()
+                except IndexError:
+                    print("List of commands is empty. Sending a stop command")
+                    cmd = "q"
+            print("Command received: {}".format(cmd))
+
             if not cmd:
                 continue
 
@@ -66,6 +82,8 @@ def command_writer_thread(stop_event: threading.Event):
 
             # everything else goes to the robot as move
             try:
+                print("putting the toopel", cmd)
+
                 command_queues["robot"].put_nowait(("move", cmd))
             except queue.Full:
                 logging.warning("Queue full for robot; drop 'move'")
@@ -86,17 +104,17 @@ def command_writer_thread(stop_event: threading.Event):
 def robot_move_thread(
     controller: PandaController,
     stop_event: threading.Event,
-    discard: bool,
 ):
+
     logging.info("Robot MOVE thread started")
     while not stop_event.is_set():
         try:
             move_cmds = []
-
             # drain robot queue
             while True:
                 try:
                     cmd_type, payload = command_queues["robot"].get_nowait()
+                    print("got this gem:", cmd_type, payload)
                 except queue.Empty:
                     break
 
@@ -140,7 +158,7 @@ def robot_logger_thread(
     stop_event: threading.Event,
     log_event,
     discard: bool,
-    writer: HDF5Writer,
+    writer: Optional["HDF5Writer"],  # may be None when discard=True
     hz: float = 30.0,
 ):
     logging.info("Robot LOGGER thread started")
@@ -157,19 +175,19 @@ def robot_logger_thread(
 
             H = controller.robot.get_pose()
             t = time.time()
-
+            if writer is not None:
             # ---- 1) push to HDF5
-            try:
-                writer.add_robot_data(
-                    state.q,
-                    state.dq,
-                    np.zeros(6),
-                    state.tau_J,
-                    H,
-                    t
-                )
-            except Exception as e:
-                logging.error(f"Robot logger: failed to add robot data: {e}")
+                try:
+                    writer.add_robot_data(
+                        state.q,
+                        state.dq,
+                        np.zeros(6),
+                        state.tau_J,
+                        H,
+                        t
+                    )
+                except Exception as e:
+                    logging.error(f"Robot logger: failed to add robot data: {e}")
 
             # ---- 2) push to CSV (make everything jsonable)
             if not discard:
@@ -282,17 +300,19 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     # make dirs
     os.makedirs("DATA", exist_ok=True)
     os.makedirs("CSV", exist_ok=True)
+    writer = None
+    if not discard:
 
-    # HDF5 writer
-    writer = HDF5Writer("DATA/session.h5", "session")
-    writer.start()
-    run_id = datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
-    writer.add_run(run_id, force=0, dx=0, dy=0, angle=0)
+        # HDF5 writer
+        writer = HDF5Writer("DATA/session.h5", "session")
+        writer.start()
+        run_id = datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
+        writer.add_run(run_id, force=0, dx=0, dy=0, angle=0)
 
-    # you said: "if a vision thread is running -> we get a camera log every frame"
-    # so we just keep writer on
-    writer.start_writing()
-    writer.to_file_enabled = True
+        # you said: "if a vision thread is running -> we get a camera log every frame"
+        # so we just keep writer on
+        writer.start_writing()
+        writer.to_file_enabled = True
 
     run_logs = []
     log_lock = threading.Lock()
@@ -313,7 +333,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     robot_move_t = threading.Thread(
         target=robot_move_thread,
         name="RobotMove",
-        args=(controller, stop_event, discard),
+        args=(controller, stop_event),
         daemon=True,
     )
     robot_log_t = threading.Thread(
@@ -343,7 +363,9 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     )
 
     # start all
+    print("starting move")
     robot_move_t.start()
+    print("donezo")
     robot_log_t.start()
     for t in vision_threads:
         t.start()
@@ -472,10 +494,8 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                 logging.error(f"Failed to save run logs: {e}")
 
         # close HDF5
-        try:
-            writer.stop()
-        except Exception as e:
-            logging.error(f"Failed to stop HDF5 writer: {e}")
-
-        cv2.destroyAllWindows()
-        logging.info("System fully shut down.")
+        if writer is not None:
+            try:
+                writer.stop()
+            except Exception as e:
+                logging.error(f"Failed to stop HDF5 writer: {e}")
