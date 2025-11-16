@@ -17,7 +17,7 @@ from april_tag_processor import (
 )
 from tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator
 from hdf5_writer import HDF5Writer
-COMMANDS_TO_GENERATE = 5
+NUM_OF_COMMANDS_TO_GENERATE = 5
 # -------------------------------------------------
 # Config
 # -------------------------------------------------
@@ -54,8 +54,9 @@ command_queues: Dict[str, queue.Queue] = {
 
 def command_writer_thread(stop_event: threading.Event):
     logging.info("Command writer started")
-    # list_of_movements = list_of_movements_generator(COMMANDS_TO_GENERATE)
-    list_of_movements = ["yaw 30 -z 0.05", "y 0.1 x 0.1"]
+    list_of_movements = list_of_movements_generator(NUM_OF_COMMANDS_TO_GENERATE)
+    list_of_movements = ["yaw 30 -z 0.05"] + list_of_movements
+    # list_of_movements = ["yaw 30 -z 0.05", "y 0.1 x 0.1"]
     while not stop_event.is_set():
         try:
             print("Type command (q=quit): ")
@@ -81,6 +82,8 @@ def command_writer_thread(stop_event: threading.Event):
 
             # everything else goes to the robot as move
             try:
+                print("putting the toopel", cmd)
+
                 command_queues["robot"].put_nowait(("move", cmd))
             except queue.Full:
                 logging.warning("Queue full for robot; drop 'move'")
@@ -102,15 +105,16 @@ def robot_move_thread(
     controller: PandaController,
     stop_event: threading.Event,
 ):
+
     logging.info("Robot MOVE thread started")
     while not stop_event.is_set():
         try:
             move_cmds = []
-
             # drain robot queue
             while True:
                 try:
                     cmd_type, payload = command_queues["robot"].get_nowait()
+                    print("got this gem:", cmd_type, payload)
                 except queue.Empty:
                     break
 
@@ -329,7 +333,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     robot_move_t = threading.Thread(
         target=robot_move_thread,
         name="RobotMove",
-        args=(controller, stop_event, discard),
+        args=(controller, stop_event),
         daemon=True,
     )
     robot_log_t = threading.Thread(
@@ -359,7 +363,9 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     )
 
     # start all
+    print("starting move")
     robot_move_t.start()
+    print("donezo")
     robot_log_t.start()
     for t in vision_threads:
         t.start()

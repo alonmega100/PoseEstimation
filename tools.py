@@ -75,7 +75,47 @@ def matrix_to_flat_dict(prefix, mat):
     return out
 
 
-def list_of_movements_generator(num_of_commands):
-    pass
+def list_of_movements_generator(
+    num_commands: int,
+    bounds = {"x": (-0.1, 0.3), "y": (-0.3, 0.1), "z": (-0.2, 0.0)},
+    p_axis: float = 0.5,
+    precision: float = 0.1,
+    rng: np.random.Generator | None = None,
+):
+    """
+    Generate commands like 'x 0.1 y -0.2' with cumulative state.
+    Any axis whose rounded delta == 0 is omitted (no 'x 0').
+    Guarantees exactly num_commands non-empty commands.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
 
+    pos = {"x": 0.0, "y": 0.0, "z": 0.0}
 
+    def fmt(v: float) -> str:
+        # nice formatting without trailing zeros
+        s = f"{v:.10f}".rstrip("0").rstrip(".")
+        return s if s else "0"
+
+    cmds: list[str] = []
+    axes = ("x", "y", "z")
+
+    while len(cmds) < num_commands:
+        parts = []
+        for axis in axes:
+            if rng.random() >= p_axis:
+                continue
+            lb, ub = bounds[axis]
+            # sample relative to remaining room (still cumulative, but no hard clipping)
+            raw = rng.uniform(lb - pos[axis], ub - pos[axis])
+            delta = round(raw / precision) * precision
+            if abs(delta) < 1e-12:   # <-- skip zeros so we never emit 'x 0'
+                continue
+            pos[axis] += delta
+            parts.append(f"{axis} {fmt(delta)}")
+
+        if parts:                   # ensure non-empty command
+            cmds.append(" ".join(parts))
+        # else: loop again until we produce a non-empty command
+
+    return cmds
