@@ -17,7 +17,7 @@ from april_tag_processor import (
 )
 from tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator
 from hdf5_writer import HDF5Writer
-NUM_OF_COMMANDS_TO_GENERATE = 5
+NUM_OF_COMMANDS_TO_GENERATE = 20
 # -------------------------------------------------
 # Config
 # -------------------------------------------------
@@ -254,16 +254,6 @@ def vision_processing_thread(
                 with state_lock:
                     shared_state["vision_image"][serial_num] = vis_img
 
-                # normalize tag orientation if needed
-                if WORLD_TAG_ID in H0i_dict:
-                    normalized_dict = {}
-                    for tag_id, H_world_tag in H0i_dict.items():
-                        z_world = H_world_tag[:3, 2]
-                        if z_world[2] < 0:
-                            H_world_tag = H_world_tag.copy()
-                            H_world_tag[:3, :3] = H_world_tag[:3, :3] @ np.diag([1, -1, -1])
-                        normalized_dict[tag_id] = H_world_tag
-                    H0i_dict = normalized_dict
 
                 # log this frame’s tag poses (even if identical)
                 if not discard:
