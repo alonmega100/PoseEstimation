@@ -1,4 +1,6 @@
 import numpy as np
+from typing import Optional, Tuple
+
 
 def to_H(R, t):
     H = np.eye(4); H[:3,:3] = R; H[:3,3] = t.reshape(3)
@@ -119,3 +121,26 @@ def list_of_movements_generator(
         # else: loop again until we produce a non-empty command
 
     return cmds
+
+
+def make_vn_cmd(body: str) -> bytes:
+    cs = 0
+    for b in body.encode("ascii"):
+        cs ^= b
+    return f"${body}*{cs:02X}\r\n".encode("ascii")
+
+
+def parse_vn_vnrrg_08(line: str) -> Optional[Tuple[float, float, float]]:
+    if not line.startswith("$VNRRG,08"):
+        return None
+    try:
+        data_part = line.split("*", 1)[0]
+        parts = data_part.split(",")
+        if len(parts) < 5:
+            return None
+        yaw = float(parts[2])
+        pitch = float(parts[3])
+        roll = float(parts[4])
+        return yaw, pitch, roll
+    except Exception:
+        return None
