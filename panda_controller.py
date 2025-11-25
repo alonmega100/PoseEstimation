@@ -5,8 +5,7 @@ from scipy.spatial.transform import Rotation as R
 
 # --- CONFIGURATION CONSTANTS ---
 ROBOT_IP = "172.16.0.2"
-DEFAULT_SPEED_FACTOR = 0.02
-
+DEFAULT_SPEED_FACTOR = 0.05
 
 class PandaController:
     """

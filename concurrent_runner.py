@@ -10,7 +10,7 @@ from typing import Dict, Optional
 import os
 import datetime
 import json
-from panda_controller import PandaController, ROBOT_IP
+from panda_controller import PandaController, ROBOT_IP, DEFAULT_SPEED_FACTOR
 from april_tag_processor import (
     AprilTagProcessor, WORLD_TAG_ID, FRAME_W, FRAME_H,
     OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE
@@ -55,7 +55,9 @@ command_queues: Dict[str, queue.Queue] = {
 def command_writer_thread(stop_event: threading.Event):
     logging.info("Command writer started")
     list_of_movements = list_of_movements_generator(NUM_OF_COMMANDS_TO_GENERATE)
-    list_of_movements = ["yaw 30 -z 0.05"] + list_of_movements
+
+    # list_of_movements = list_of_movements
+    print(list_of_movements)
     # list_of_movements = ["yaw 30 -z 0.05", "y 0.1 x 0.1"]
     while not stop_event.is_set():
         try:
@@ -107,6 +109,13 @@ def robot_move_thread(
 ):
 
     logging.info("Robot MOVE thread started")
+#    --- Manual Initialization ---
+
+    updated_H, valid = controller.pos_command_to_H("yaw 30 -z 0.15")
+
+    controller.robot.move_to_pose(updated_H)
+
+#  --- End of Initialization ---
     while not stop_event.is_set():
         try:
             move_cmds = []
@@ -133,7 +142,7 @@ def robot_move_thread(
 
                 if valid and updated_H is not None:
                     try:
-                        controller.robot.move_to_pose(updated_H)
+                        controller.robot.move_to_pose(updated_H, speed_factor=DEFAULT_SPEED_FACTOR)
                     except Exception as e:
                         logging.error(f"move_to_pose failed: {e}")
 
@@ -353,9 +362,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     )
 
     # start all
-    print("starting move")
     robot_move_t.start()
-    print("donezo")
     robot_log_t.start()
     for t in vision_threads:
         t.start()
