@@ -1,38 +1,49 @@
 #!/usr/bin/env python3
 """
-Analyze camera performance by comparing positions from different cameras
-after transforming them into the robot base frame.
+Analyze camera performance by comparing poses from different cameras
+and against the robot, after transforming everything into the robot base frame.
 
-For each CSV, and for each pair of cameras, we:
-  1. Transform camera-frame points to robot base frame using hand-eye transforms.
-  2. Time-align samples between the two cameras (per tag_id) using nearest-neighbor
-     in time with a tolerance.
-  3. Compute error vectors and MSE / stats of ||p_camA - p_camB||.
+For each CSV, we can:
+  1. Transform camera-frame tag poses to robot base frame using hand-eye transforms.
+  2. Time-align samples between sensors using nearest-neighbor in time with a tolerance.
+  3. Compute error vectors and statistics on ||p_A - p_B|| (in *millimeters*).
 
-Usage examples
---------------
-# Use defaults (CSV dir, transform dir, column names)
-python camera_performance_analysis.py
+Assumptions about the CSV (matches your concurrent logger):
+-----------------------------------------------------------
+Columns:
+    timestamp  : ISO string or numeric time
+    source     : 'robot' for robot pose rows, camera serial for camera rows
+    event      : e.g. 'pose_snapshot' for robot, something like 'tag_pose' for cameras
+    tag_id     : AprilTag ID for camera rows (robot rows may have NaN here)
+    pose_ij    : entries of a 4x4 pose matrix, row i col j, i,j in {0,1,2,3}.
 
-# Analyze a specific CSV file
-python camera_performance_analysis.py --csv CSV/session_log_0001.csv
+For cameras:
+    The 4x4 matrix encodes the tag pose in the camera frame (T_cam_tag).
+For robot:
+    The 4x4 matrix encodes the robot/tool pose in the robot base frame (T_base_robot).
 
-# Change time tolerance to 20 ms and focus on tag 1
-python camera_performance_analysis.py --time-tol 0.02 --tag-id 1
+Hand–eye calibration gives:
+    T_base_cam  (cam->robot-base)  from separate .npz files.
 
-# Use a specific transform directory
-python camera_performance_analysis.py --transform-dir DATA/hand_eye
+Then we compute:
+    T_base_tag_from_cam = T_base_cam @ T_cam_tag
+    p_base_tag_from_cam = translation of T_base_tag_from_cam
+
+    T_base_robot        = matrix from robot row
+    p_base_robot        = translation of T_base_robot
+
+All distances are reported in millimeters.
 """
 
 import argparse
 import glob
 import os
-from pathlib import Path
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
+MM = 1000.0  # meters -> millimeters
 
 DEFAULT_TRANSFORM_PATH = None  # optional global file (for backwards compat)
 DEFAULT_TRANSFORM_DIR = "DATA/hand_eye"
@@ -163,43 +174,83 @@ def load_cam_to_robot_transforms(
 
 
 # ---------------------------------------------------------------------
-# CSV handling (still here but we won't use it in the default path)
+# Pose helpers
 # ---------------------------------------------------------------------
-def find_csv_files(csv_arg: Optional[str], csv_dir: str) -> List[str]:
-    """
-    If csv_arg is given, return [csv_arg].
-    Otherwise, find all CSV/session_log_*.csv in csv_dir.
-    (Kept for backwards compat; main() now uses "find_rot_tran"-style selection.)
-    """
-    if csv_arg:
-        if not os.path.exists(csv_arg):
-            raise FileNotFoundError(f"CSV file not found: {csv_arg}")
-        return [csv_arg]
-
-    pattern = os.path.join(csv_dir, "session_log_*.csv")
-    files = sorted(glob.glob(pattern))
-    if not files:
-        raise FileNotFoundError(f"No CSV files found with pattern: {pattern}")
-    print(f"[INFO] Found {len(files)} CSV files in {csv_dir}")
-    return files
+POSE_PREFIX = "pose_"
 
 
-def apply_transform(T: np.ndarray, pts_cam: np.ndarray) -> np.ndarray:
+def pose_row_to_matrix(row: pd.Series, prefix: str = POSE_PREFIX) -> np.ndarray:
     """
-    Apply 4x4 homogeneous transform T to Nx3 points in camera frame.
-    T maps cam -> base (i.e., p_base = T @ p_cam_h).
+    Build a 4x4 pose matrix from a row with columns:
+        pose_00, pose_01, ..., pose_33
     """
-    assert pts_cam.shape[1] == 3
-    N = pts_cam.shape[0]
-    homo = np.concatenate([pts_cam, np.ones((N, 1))], axis=1)  # (N,4)
-    pts_base_h = homo @ T.T  # (N,4)
-    return pts_base_h[:, :3]
+    T = np.eye(4, dtype=float)
+    for r in range(4):
+        for c in range(4):
+            key = f"{prefix}{r}{c}"
+            T[r, c] = float(row[key])
+    return T
+
+
+def add_camera_base_columns(df_cam: pd.DataFrame, cam_id: str, T_cam_to_robot: Dict[str, np.ndarray]) -> pd.DataFrame:
+    """
+    For a camera dataframe, compute the tag position in the robot base frame
+    using the full 4x4 pose matrices.
+
+    Assumes:
+        T_cam_tag (from CSV) and T_base_cam (from hand-eye) so:
+        T_base_tag = T_base_cam @ T_cam_tag
+    """
+    if cam_id not in T_cam_to_robot:
+        raise KeyError(f"No transform found for camera {cam_id}")
+
+    T_base_cam = T_cam_to_robot[cam_id]
+
+    xs = []
+    ys = []
+    zs = []
+    for _, row in df_cam.iterrows():
+        T_cam_tag = pose_row_to_matrix(row)
+        T_base_tag = T_base_cam @ T_cam_tag
+        p = T_base_tag[:3, 3]
+        xs.append(p[0])
+        ys.append(p[1])
+        zs.append(p[2])
+
+    df_cam = df_cam.copy()
+    df_cam["x_base"] = xs
+    df_cam["y_base"] = ys
+    df_cam["z_base"] = zs
+    return df_cam
+
+
+def add_robot_base_columns(df_robot: pd.DataFrame) -> pd.DataFrame:
+    """
+    For robot rows, the pose matrix is assumed to already be in the robot base frame:
+        T_base_robot (base->tool or base->whatever).
+    We just extract the translation.
+    """
+    xs = []
+    ys = []
+    zs = []
+    for _, row in df_robot.iterrows():
+        T_base_robot = pose_row_to_matrix(row)
+        p = T_base_robot[:3, 3]
+        xs.append(p[0])
+        ys.append(p[1])
+        zs.append(p[2])
+
+    df_robot = df_robot.copy()
+    df_robot["x_base"] = xs
+    df_robot["y_base"] = ys
+    df_robot["z_base"] = zs
+    return df_robot
 
 
 # ---------------------------------------------------------------------
 # Core analysis
 # ---------------------------------------------------------------------
-def analyze_pair(
+def analyze_camera_pair(
     df: pd.DataFrame,
     cam_a: str,
     cam_b: str,
@@ -208,14 +259,11 @@ def analyze_pair(
     time_col: str,
     cam_col: str,
     tag_col: str,
-    cam_x_col: str,
-    cam_y_col: str,
-    cam_z_col: str,
     tag_id_filter: Optional[int] = None,
 ) -> None:
     """
-    For a given DataFrame and pair of cameras, compute MSE between their
-    robot-frame positions for temporally aligned samples.
+    For a given DataFrame and pair of cameras, compute position error statistics
+    in the robot base frame, per tag, and print metrics in millimeters.
     """
     df_pair = df.copy()
 
@@ -223,7 +271,7 @@ def analyze_pair(
     if tag_id_filter is not None:
         df_pair = df_pair[df_pair[tag_col] == tag_id_filter]
 
-    # Filter rows for cam_a and cam_b
+    # Filter rows for each camera
     df_a = df_pair[df_pair[cam_col] == cam_a].copy()
     df_b = df_pair[df_pair[cam_col] == cam_b].copy()
 
@@ -231,19 +279,15 @@ def analyze_pair(
         print(f"[WARN] No data for camera pair ({cam_a}, {cam_b}) in this CSV.")
         return
 
+    # Add robot-base positions for each camera
+    df_a = add_camera_base_columns(df_a, cam_a, T_cam_to_robot)
+    df_b = add_camera_base_columns(df_b, cam_b, T_cam_to_robot)
+
     # Sort by time for merge_asof
     df_a = df_a.sort_values(time_col)
     df_b = df_b.sort_values(time_col)
 
-    # Transform to robot frame
-    if cam_a not in T_cam_to_robot or cam_b not in T_cam_to_robot:
-        print(f"[WARN] Missing transform for one of ({cam_a}, {cam_b}), skipping.")
-        return
-
-    T_a = T_cam_to_robot[cam_a]
-    T_b = T_cam_to_robot[cam_b]
-
-    # We'll merge per-tag if tags exist
+    # We'll align per-tag
     tags_a = set(df_a[tag_col].dropna().unique())
     tags_b = set(df_b[tag_col].dropna().unique())
     common_tags = sorted(tags_a & tags_b)
@@ -266,7 +310,6 @@ def analyze_pair(
         else:
             tol = time_tol
 
-        # Align by time, per tag
         merged = pd.merge_asof(
             sub_a.sort_values(time_col),
             sub_b.sort_values(time_col),
@@ -276,22 +319,15 @@ def analyze_pair(
             suffixes=("_a", "_b"),
         )
 
-        merged = merged.dropna(subset=[f"{cam_x_col}_b", f"{cam_y_col}_b", f"{cam_z_col}_b"])
+        merged = merged.dropna(subset=["x_base_b", "y_base_b", "z_base_b"])
         if merged.empty:
             continue
 
-        # Extract camera-frame positions
-        pts_a_cam = merged[[f"{cam_x_col}_a", f"{cam_y_col}_a", f"{cam_z_col}_a"]].to_numpy()
-        pts_b_cam = merged[[f"{cam_x_col}_b", f"{cam_y_col}_b", f"{cam_z_col}_b"]].to_numpy()
+        pts_a = merged[["x_base_a", "y_base_a", "z_base_a"]].to_numpy()
+        pts_b = merged[["x_base_b", "y_base_b", "z_base_b"]].to_numpy()
 
-        # Transform to robot base frame
-        pts_a_base = apply_transform(T_a, pts_a_cam)
-        pts_b_base = apply_transform(T_b, pts_b_cam)
-
-        # Error vectors and norms
-        diffs = pts_a_base - pts_b_base       # (N,3)
-        dists = np.linalg.norm(diffs, axis=1) # (N,)
-
+        diffs = pts_a - pts_b
+        dists = np.linalg.norm(diffs, axis=1)  # meters
         all_errors.append(dists)
 
     if not all_errors:
@@ -299,21 +335,154 @@ def analyze_pair(
         return
 
     all_errors = np.concatenate(all_errors)
+
     mse = float(np.mean(all_errors ** 2))
     rmse = float(np.sqrt(mse))
     mean_err = float(np.mean(all_errors))
     median_err = float(np.median(all_errors))
     p95 = float(np.percentile(all_errors, 95))
 
+    # Convert to millimeters for reporting
+    mse_mm2 = mse * (MM ** 2)
+    rmse_mm = rmse * MM
+    mean_err_mm = mean_err * MM
+    median_err_mm = median_err * MM
+    p95_mm = p95 * MM
+
     print(f"\n=== Camera pair: {cam_a} vs {cam_b} ===")
     if tag_id_filter is not None:
         print(f"Tag filter: {tag_id_filter}")
-    print(f"Aligned samples: {len(all_errors)}")
-    print(f"Mean |Δp|   : {mean_err:.4f} m")
-    print(f"Median |Δp| : {median_err:.4f} m")
-    print(f"95th |Δp|   : {p95:.4f} m")
-    print(f"MSE        : {mse:.6f} m^2")
-    print(f"RMSE       : {rmse:.6f} m\n")
+    print(f"Aligned samples : {len(all_errors)}")
+    print(f"Mean |Δp|       : {mean_err_mm:.2f} mm")
+    print(f"Median |Δp|     : {median_err_mm:.2f} mm")
+    print(f"95th percentile : {p95_mm:.2f} mm")
+    print(f"MSE             : {mse_mm2:.2f} mm^2")
+    print(f"RMSE            : {rmse_mm:.2f} mm")
+
+
+def analyze_camera_vs_robot(
+    df: pd.DataFrame,
+    cam_id: str,
+    T_cam_to_robot: Dict[str, np.ndarray],
+    time_tol: float,
+    time_col: str,
+    cam_col: str,
+    tag_col: str,
+    robot_source_name: str = "robot",
+    tag_id_filter: Optional[int] = None,
+) -> None:
+    """
+    Compare a camera's tag-based pose estimates against the robot's reported pose.
+
+    For each matched time pair (camera tag observation, robot pose snapshot),
+    we compute:
+        p_base_tag_from_cam (from camera + hand-eye)
+        p_base_robot        (from robot 4x4 matrix)
+    and then statistics on ||p_cam - p_robot||, in millimeters.
+    """
+    df_all = df.copy()
+
+    # Optional: filter by tag_id for camera
+    df_cam = df_all[df_all[cam_col] == cam_id].copy()
+    if tag_id_filter is not None:
+        df_cam = df_cam[df_cam[tag_col] == tag_id_filter]
+
+    df_robot = df_all[df_all[cam_col] == robot_source_name].copy()
+
+    if df_cam.empty:
+        print(f"[WARN] No camera data for {cam_id} in this CSV.")
+        return
+    if df_robot.empty:
+        print(f"[WARN] No robot data (source == '{robot_source_name}') in this CSV.")
+        return
+
+    # Compute base-frame positions
+    df_cam = add_camera_base_columns(df_cam, cam_id, T_cam_to_robot)
+    df_robot = add_robot_base_columns(df_robot)
+
+    df_cam = df_cam.sort_values(time_col)
+    df_robot = df_robot.sort_values(time_col)
+
+    # Decide tolerance type based on time dtype
+    if np.issubdtype(df_cam[time_col].dtype, np.datetime64):
+        tol = pd.Timedelta(seconds=time_tol)
+    else:
+        tol = time_tol
+
+    merged = pd.merge_asof(
+        df_cam,
+        df_robot,
+        on=time_col,
+        direction="nearest",
+        tolerance=tol,
+        suffixes=("_cam", "_robot"),
+    )
+
+    merged = merged.dropna(subset=["x_base_robot", "y_base_robot", "z_base_robot"])
+    if merged.empty:
+        print(f"[WARN] No aligned samples for camera {cam_id} vs robot within tolerance.")
+        return
+
+    pts_cam = merged[["x_base_cam", "y_base_cam", "z_base_cam"]].to_numpy()
+    pts_robot = merged[["x_base_robot", "y_base_robot", "z_base_robot"]].to_numpy()
+
+    diffs = pts_cam - pts_robot
+    dists = np.linalg.norm(diffs, axis=1)  # meters
+
+    mse = float(np.mean(dists ** 2))
+    rmse = float(np.sqrt(mse))
+    mean_err = float(np.mean(dists))
+    median_err = float(np.median(dists))
+    p95 = float(np.percentile(dists, 95))
+
+    # Convert to millimeters for reporting
+    mse_mm2 = mse * (MM ** 2)
+    rmse_mm = rmse * MM
+    mean_err_mm = mean_err * MM
+    median_err_mm = median_err * MM
+    p95_mm = p95 * MM
+
+    print(f"\n=== Camera vs Robot: {cam_id} vs {robot_source_name} ===")
+    if tag_id_filter is not None:
+        print(f"Tag filter (camera side): {tag_id_filter}")
+    print(f"Aligned samples : {len(dists)}")
+    print(f"Mean |Δp|       : {mean_err_mm:.2f} mm")
+    print(f"Median |Δp|     : {median_err_mm:.2f} mm")
+    print(f"95th percentile : {p95_mm:.2f} mm")
+    print(f"MSE             : {mse_mm2:.2f} mm^2")
+    print(f"RMSE            : {rmse_mm:.2f} mm")
+
+
+# ---------------------------------------------------------------------
+# CSV selection
+# ---------------------------------------------------------------------
+def choose_csv_interactively(csv_dir: str) -> str:
+    """
+    Mimic your 'find rot tran' behaviour:
+    list CSV/session_log_*.csv, sort, print, choose index, Enter = last.
+    """
+    pattern = os.path.join(csv_dir, "session_log_*.csv")
+    files = [os.path.basename(f) for f in glob.glob(pattern)]
+    if not files:
+        raise FileNotFoundError(f"No CSV files found with pattern {pattern}")
+
+    files = sorted(files)
+    print("Available CSV files in", csv_dir)
+    for i, name in enumerate(files):
+        print(f"  {i}: {name}")
+
+    num = input(
+        "File to load? 0 for the first and so on...\n"
+        "Press Enter for the last one\n :"
+    )
+    if not num.strip():
+        idx = -1
+    else:
+        idx = int(num)
+
+    chosen = files[idx]
+    print("You chose", chosen)
+    return os.path.join(csv_dir, chosen)
 
 
 # ---------------------------------------------------------------------
@@ -321,7 +490,7 @@ def analyze_pair(
 # ---------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Analyze camera performance by comparing robot-frame positions between cameras."
+        description="Analyze camera performance (camera vs camera, and camera vs robot) in robot base frame."
     )
     parser.add_argument(
         "--transform",
@@ -341,7 +510,7 @@ def main():
             "cam_<CAMID>_to_robot_transform.npz (default: DATA/hand_eye)"
         ),
     )
-    parser.add_argument("--csv", help="Path to a specific CSV file (if omitted, use selection from CSV/)")
+    parser.add_argument("--csv", help="Path to a specific CSV file (if omitted, select from CSV/)")
     parser.add_argument(
         "--csv-dir",
         default=DEFAULT_CSV_DIR,
@@ -353,132 +522,102 @@ def main():
         default="timestamp",
         help="Time column name (ISO string or float seconds, default: 'timestamp')",
     )
-    # NEW DEFAULTS for your concurrent logger CSV:
     parser.add_argument(
         "--cam-col",
         default="source",
-        help="Camera ID column name (default: 'source' – matching your CSV)",
+        help="Sensor/camera ID column name (default: 'source')",
     )
     parser.add_argument(
         "--tag-col",
         default="tag_id",
         help="Tag ID column name (default: 'tag_id')",
     )
-    # We use the translation part of the 4x4 pose matrix: pose_03, pose_13, pose_23
-    parser.add_argument(
-        "--cam-x-col",
-        default="pose_03",
-        help="Camera-frame X column name (default: 'pose_03')",
-    )
-    parser.add_argument(
-        "--cam-y-col",
-        default="pose_13",
-        help="Camera-frame Y column name (default: 'pose_13')",
-    )
-    parser.add_argument(
-        "--cam-z-col",
-        default="pose_23",
-        help="Camera-frame Z column name (default: 'pose_23')",
-    )
-
     parser.add_argument(
         "--time-tol",
         type=float,
         default=0.02,
-        help="Max time difference (seconds) for matching points between cameras (default: 0.02)",
+        help="Max time difference (seconds) for matching samples (default: 0.02)",
     )
     parser.add_argument(
         "--tag-id",
         type=int,
-        help="Optional tag_id to filter on (default: use all tags)",
+        help="Optional tag_id to filter on (camera side; default: use all tags)",
+    )
+    parser.add_argument(
+        "--robot-source-name",
+        default="robot",
+        help="Value of 'source' column that denotes robot pose rows (default: 'robot')",
     )
 
     args = parser.parse_args()
 
     # ---------------------------
-    # Choose ONE CSV, like find_rot_tran
+    # Choose ONE CSV
     # ---------------------------
     if args.csv:
-        csv_files = [args.csv]
+        csv_file = args.csv
     else:
-        # Mimic the behavior from the "find rot tran" script:
-        # list CSV/, sort, print, ask for index, Enter = last.
-        csv_dir = args.csv_dir
-        files = [f for f in os.listdir(csv_dir) if f.endswith(".csv")]
-        if not files:
-            raise FileNotFoundError(f"No CSV files found in {csv_dir}")
-        sorted_files = sorted(files)
-        print("Available CSV files in CSV/:")
-        for i, name in enumerate(sorted_files):
-            print(f"  {i}: {name}")
-        num = input(
-            "File to load? 0 for the first and so on...\n"
-            " Press Enter for the last one\n :"
+        csv_file = choose_csv_interactively(args.csv_dir)
+
+    print("\n##############################")
+    print(f"[INFO] Processing CSV: {csv_file}")
+    print("##############################")
+
+    # ---------------------------
+    # Load CSV
+    # ---------------------------
+    df = pd.read_csv(csv_file)
+
+    # Convert timestamp to datetime if it's not numeric
+    if args.time_col in df.columns:
+        if not np.issubdtype(df[args.time_col].dtype, np.number):
+            try:
+                df[args.time_col] = pd.to_datetime(df[args.time_col])
+            except Exception as e:
+                print(f"[WARN] Failed to parse {args.time_col} as datetime: {e}")
+
+    # Check required columns
+    pose_cols = [f"{POSE_PREFIX}{r}{c}" for r in range(4) for c in range(4)]
+    required_cols = [args.time_col, args.cam_col, args.tag_col] + pose_cols
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        print(f"[ERROR] CSV {csv_file} missing required columns: {missing}")
+        print("        Expected pose_ij columns like 'pose_00', 'pose_01', ..., 'pose_33'.")
+        return
+
+    # All camera IDs (everything except the robot)
+    all_sources = set(df[args.cam_col].astype(str).unique())
+    robot_name = args.robot_source_name
+    cam_ids_in_csv = sorted(s for s in all_sources if s != robot_name)
+
+    if not cam_ids_in_csv:
+        print(f"[ERROR] No camera sources found in CSV (sources: {sorted(all_sources)})")
+        return
+
+    try:
+        T_cam_to_robot = load_cam_to_robot_transforms(
+            args.transform, args.transform_dir, cam_ids_in_csv
         )
-        if not num:
-            num = -1
-        num = int(num)
-        chosen = sorted_files[num]
-        print("You chose", chosen)
-        csv_files = [os.path.join(csv_dir, chosen)]
+    except Exception as e:
+        print(f"[ERROR] Could not load transforms for {csv_file}: {e}")
+        return
 
-    # Now process ONLY this one CSV
-    for csv_file in csv_files:
-        print(f"\n##############################")
-        print(f"[INFO] Processing CSV: {csv_file}")
-        print(f"##############################")
+    # Keep only cameras that actually have a transform
+    cam_ids = [cid for cid in cam_ids_in_csv if cid in T_cam_to_robot]
 
-        df = pd.read_csv(csv_file)
+    if len(cam_ids) < 1:
+        print(f"[ERROR] No cameras with valid transforms were found. Cameras in CSV: {cam_ids_in_csv}")
+        return
 
-        # Convert timestamp to datetime if it's not numeric
-        if args.time_col in df.columns:
-            if not np.issubdtype(df[args.time_col].dtype, np.number):
-                try:
-                    df[args.time_col] = pd.to_datetime(df[args.time_col])
-                except Exception as e:
-                    print(f"[WARN] Failed to parse {args.time_col} as datetime: {e}")
-
-        required_cols = [
-            args.time_col,
-            args.cam_col,
-            args.tag_col,
-            args.cam_x_col,
-            args.cam_y_col,
-            args.cam_z_col,
-        ]
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing:
-            print(f"[ERROR] CSV {csv_file} missing required columns: {missing}")
-            print(
-                "        Use --time-col / --cam-col / --tag-col / "
-                "--cam-x-col / --cam-y-col / --cam-z-col to adapt."
-            )
-            continue
-
-        # All cameras appearing in this CSV
-        cam_ids_in_csv = sorted(set(df[args.cam_col].astype(str).unique()))
-
-        try:
-            T_cam_to_robot = load_cam_to_robot_transforms(
-                args.transform, args.transform_dir, cam_ids_in_csv
-            )
-        except Exception as e:
-            print(f"[ERROR] Could not load transforms for {csv_file}: {e}")
-            continue
-
-        # Keep only cameras that have a transform
-        cam_ids = [cid for cid in cam_ids_in_csv if cid in T_cam_to_robot]
-
-        if len(cam_ids) < 2:
-            print(f"[WARN] Need at least 2 cameras with transforms; found {cam_ids}")
-            continue
-
-        # Analyze every pair (i < j)
+    # ---------------------------
+    # Camera-vs-camera analysis
+    # ---------------------------
+    if len(cam_ids) >= 2:
         for i in range(len(cam_ids)):
             for j in range(i + 1, len(cam_ids)):
                 cam_a = cam_ids[i]
                 cam_b = cam_ids[j]
-                analyze_pair(
+                analyze_camera_pair(
                     df,
                     cam_a,
                     cam_b,
@@ -487,11 +626,30 @@ def main():
                     time_col=args.time_col,
                     cam_col=args.cam_col,
                     tag_col=args.tag_col,
-                    cam_x_col=args.cam_x_col,
-                    cam_y_col=args.cam_y_col,
-                    cam_z_col=args.cam_z_col,
                     tag_id_filter=args.tag_id,
                 )
+    else:
+        print("[INFO] Only one camera with a valid transform; skipping camera-to-camera comparison.")
+
+    # ---------------------------
+    # Camera-vs-robot analysis
+    # ---------------------------
+    has_robot = (df[args.cam_col] == robot_name).any()
+    if has_robot:
+        for cam_id in cam_ids:
+            analyze_camera_vs_robot(
+                df,
+                cam_id,
+                T_cam_to_robot,
+                time_tol=args.time_tol,
+                time_col=args.time_col,
+                cam_col=args.cam_col,
+                tag_col=args.tag_col,
+                robot_source_name=robot_name,
+                tag_id_filter=args.tag_id,
+            )
+    else:
+        print(f"[INFO] No robot rows found (source == '{robot_name}'); skipping camera-to-robot comparison.")
 
 
 if __name__ == "__main__":
