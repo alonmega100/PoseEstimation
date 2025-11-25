@@ -52,7 +52,10 @@ command_queues: Dict[str, queue.Queue] = {
 # Command thread (stdin)
 # -------------------------------------------------
 
-def command_writer_thread(stop_event: threading.Event):
+def command_writer_thread(
+    stop_event: threading.Event,
+    no_more_commands_event: threading.Event,
+):
     logging.info("Command writer started")
     list_of_movements = list_of_movements_generator(NUM_OF_COMMANDS_TO_GENERATE)
 
@@ -65,22 +68,31 @@ def command_writer_thread(stop_event: threading.Event):
 
             i, o, e = select.select([sys.stdin], [], [], 2)
 
-            if (i):
+            if i:
+                # User typed something
                 cmd = sys.stdin.readline().strip()
             else:
+                # Auto mode: take from pre-generated list
                 try:
                     cmd = list_of_movements.pop(0).strip()
                 except IndexError:
-                    print("List of commands is empty. Sending a stop command")
-                    cmd = "q"
+                    # No more commands to send -> tell the robot thread
+                    print("List of commands is empty. No more commands will be sent.")
+                    no_more_commands_event.set()
+                    # We don't set stop_event here; robot thread will stop
+                    # once it has finished all queued moves.
+                    break
+
             print("Command received: {}".format(cmd))
 
             if not cmd:
                 continue
 
+            # Manual abort (user typed q/quit/exit)
             if cmd in ("q", "quit", "exit"):
                 stop_event.set()
                 break
+
 
             # everything else goes to the robot as move
             try:
@@ -106,12 +118,14 @@ def command_writer_thread(stop_event: threading.Event):
 def robot_move_thread(
     controller: PandaController,
     stop_event: threading.Event,
+    no_more_commands_event: threading.Event,
 ):
+
 
     logging.info("Robot MOVE thread started")
 #    --- Manual Initialization ---
 
-    updated_H, valid = controller.pos_command_to_H("yaw 30 -z 0.15")
+    updated_H, valid = controller.pos_command_to_H("yaw 10 -z 0.15")
 
     controller.robot.move_to_pose(updated_H)
 
@@ -149,6 +163,10 @@ def robot_move_thread(
             if not move_cmds:
                 time.sleep(0.001)
 
+            if no_more_commands_event.is_set() and command_queues["robot"].empty():
+                logging.info("Robot MOVE thread: finished all commands, signaling global stop.")
+                stop_event.set()
+                break
         except KeyboardInterrupt:
             stop_event.set()
             break
@@ -295,6 +313,7 @@ def vision_processing_thread(
 # -------------------------------------------------
 def run_concurrent_system(controller: PandaController, discard: bool = False):
     stop_event = threading.Event()
+    no_more_commands_event = threading.Event()
 
     # make dirs
     os.makedirs("DATA", exist_ok=True)
@@ -332,7 +351,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     robot_move_t = threading.Thread(
         target=robot_move_thread,
         name="RobotMove",
-        args=(controller, stop_event),
+        args=(controller, stop_event, no_more_commands_event),
         daemon=True,
     )
     robot_log_t = threading.Thread(
@@ -357,7 +376,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     command_t = threading.Thread(
         target=command_writer_thread,
         name="CommandWriter",
-        args=(stop_event,),
+        args=(stop_event, no_more_commands_event),
         daemon=True
     )
 
