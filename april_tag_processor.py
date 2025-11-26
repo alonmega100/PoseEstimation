@@ -6,13 +6,7 @@ import pyrealsense2 as rs
 from pupil_apriltags import Detector
 from scipy.spatial.transform import Rotation as R
 from tools import to_H, inv_H
-
-# --- CONFIGURATION CONSTANTS (All moved to the class or passed in INIT) ---
-FRAME_W, FRAME_H, FPS = 1280, 720, 30
-WORLD_TAG_ID = 0
-WORLD_TAG_SIZE = 0.138
-OBJ_TAG_SIZE = 0.032
-OBJ_TAG_IDS = {1, 2}
+from config import FRAME_W, FRAME_H, FPS, WORLD_TAG_ID, WORLD_TAG_SIZE, OBJ_TAG_SIZE, OBJ_TAG_IDS
 
 
 class RealSenseColorCap:

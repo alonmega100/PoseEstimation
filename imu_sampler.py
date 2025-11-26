@@ -1,8 +1,7 @@
 from imu_reader import IMUReader
 import time
-import math  # for math.isnan if you want
+import math
 
-print("boop")
 imu = IMUReader(port="/dev/ttyUSB0", rate_hz=50.0)
 imu.start()
 

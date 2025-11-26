@@ -3,14 +3,7 @@ import cv2
 import numpy as np
 from april_tag_processor import AprilTagProcessor
 from tools import inv_H
-
-# --- CONFIGURATION CONSTANTS ---
-SERIALS = ["839112062097", "845112070338"]
-FRAME_W, FRAME_H = 1280, 720
-WORLD_TAG_SIZE = 0.138
-OBJ_TAG_SIZE = 0.032
-OBJ_TAG_IDS = {1, 2}
-WORLD_TAG_ID = 0
+from config import CAMERA_SERIALS, FRAME_W, FRAME_H, WORLD_TAG_SIZE, OBJ_TAG_SIZE,OBJ_TAG_IDS,WORLD_TAG_ID
 
 
 def pose_delta(H_a: np.ndarray, H_b: np.ndarray) -> tuple[float, float, np.ndarray]:
@@ -31,7 +24,7 @@ def run_vision_comparison():
     processors = []
     try:
         # ----- Open Cameras (INIT) -----
-        for sn in SERIALS:
+        for sn in CAMERA_SERIALS:
             try:
                 processors.append(AprilTagProcessor(
                     serial=sn,

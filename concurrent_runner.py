@@ -10,21 +10,20 @@ from typing import Dict, Optional
 import os
 import datetime
 import json
-from panda_controller import PandaController, ROBOT_IP, DEFAULT_SPEED_FACTOR
-from april_tag_processor import (
-    AprilTagProcessor, WORLD_TAG_ID, FRAME_W, FRAME_H,
-    OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE
-)
+from panda_controller import PandaController, DEFAULT_SPEED_FACTOR
+from april_tag_processor import AprilTagProcessor
 from tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator
 from hdf5_writer import HDF5Writer
-NUM_OF_COMMANDS_TO_GENERATE = 20
+from config import WORLD_TAG_ID, FRAME_W, FRAME_H, OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE, CAMERA_SERIALS
+
+
 # -------------------------------------------------
 # Config
 # -------------------------------------------------
-CAMERA_SERIALS = ["839112062097", "845112070338"]
+
 TARGET_LOG_HZ = 30.0     # robot logger rate
 LOG_INTERVAL = 1.0 / TARGET_LOG_HZ
-
+NUM_OF_COMMANDS_TO_GENERATE = 20
 POSE_COLS = [f"pose_{r}{c}" for r in range(4) for c in range(4)]
 
 logging.basicConfig(
@@ -58,8 +57,9 @@ def command_writer_thread(
 ):
     logging.info("Command writer started")
     list_of_movements = list_of_movements_generator(NUM_OF_COMMANDS_TO_GENERATE)
-
-    # list_of_movements = list_of_movements
+    ###### Using the following line to override the command queue to get a reapeating experiment  ######
+    list_of_movements = ['y 0.2', 'x -0.1', 'y -0.1', 'x 0.2', 'x -0.1', 'x 0.1', 'y 0.1', 'x -0.1', 'x -0.1 y -0.1', 'x 0.2', 'x -0.1 y -0.1', 'y 0.1', 'y 0.1', 'x -0.1', 'y -0.2', 'y 0.1', 'y -0.1', 'x 0.1', 'y 0.2', 'x -0.1 y -0.1']
+    ######   ######
     print(list_of_movements)
     # list_of_movements = ["yaw 30 -z 0.05", "y 0.1 x 0.1"]
     while not stop_event.is_set():
@@ -125,7 +125,7 @@ def robot_move_thread(
     logging.info("Robot MOVE thread started")
 #    --- Manual Initialization ---
 
-    updated_H, valid = controller.pos_command_to_H("yaw 10 -z 0.15")
+    updated_H, valid = controller.pos_command_to_H("yaw 20 -z 0.15")
 
     controller.robot.move_to_pose(updated_H)
 

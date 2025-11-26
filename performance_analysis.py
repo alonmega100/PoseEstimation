@@ -43,11 +43,10 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from config import DEFAULT_TRANSFORM_PATH, DEFAULT_TRANSFORM_DIR, DEFAULT_CSV_DIR
 MM = 1000.0  # (meters -> millimeters)
 
-DEFAULT_TRANSFORM_PATH = None  # optional global file (for backwards compat)
-DEFAULT_TRANSFORM_DIR = "DATA/hand_eye"
-DEFAULT_CSV_DIR = "CSV"
+
 
 
 # ---------------------------------------------------------------------

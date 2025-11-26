@@ -5,29 +5,6 @@ import threading
 from typing import Optional, Tuple
 from tools import make_vn_cmd, parse_vn_vnrrg_08
 
-# def make_vn_cmd(body: str) -> bytes:
-#     cs = 0
-#     for b in body.encode("ascii"):
-#         cs ^= b
-#     return f"${body}*{cs:02X}\r\n".encode("ascii")
-#
-#
-# def parse_vn_vnrrg_08(line: str) -> Optional[Tuple[float, float, float]]:
-#     if not line.startswith("$VNRRG,08"):
-#         return None
-#     try:
-#         data_part = line.split("*", 1)[0]
-#         parts = data_part.split(",")
-#         if len(parts) < 5:
-#             return None
-#         yaw = float(parts[2])
-#         pitch = float(parts[3])
-#         roll = float(parts[4])
-#         return yaw, pitch, roll
-#     except Exception:
-#         return None
-
-
 class IMUReader:
     """
     Background thread that polls VN-100T (VNRRG,8) at a fixed rate
