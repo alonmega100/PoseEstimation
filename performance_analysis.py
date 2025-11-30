@@ -44,6 +44,8 @@ import numpy as np
 import pandas as pd
 
 from config import DEFAULT_TRANSFORM_PATH, DEFAULT_TRANSFORM_DIR, DEFAULT_CSV_DIR
+from tools import H_to_xyzrpy_ZYX, rot_geodesic_angle_deg
+import numpy as _np
 MM = 1000.0  # (meters -> millimeters)
 
 
@@ -452,6 +454,142 @@ def analyze_camera_vs_robot(
     print(f"RMSE            : {rmse_mm:.2f} mm")
 
 
+def analyze_imu_vs_robot(
+    df: pd.DataFrame,
+    imu_source: str,
+    robot_source_name: str = "robot",
+    time_tol: float = 0.02,
+    time_col: str = "timestamp",
+):
+    """
+    Compare IMU-integrated position/yaw/pitch/roll against robot pose snapshots.
+
+    Expects IMU rows to have columns: imu_x, imu_y, imu_z, imu_yaw_deg, imu_pitch_deg, imu_roll_deg
+    (these are produced by the concurrent runner CSV writer).
+    """
+    if imu_source not in set(df["source"].astype(str).unique()):
+        print(f"[INFO] No IMU rows with source '{imu_source}' in CSV; skipping IMU vs robot analysis.")
+        return
+
+    df_imu = df[df["source"] == imu_source].copy()
+    df_robot = df[df["source"] == robot_source_name].copy()
+
+    if df_imu.empty:
+        print("[WARN] No IMU rows found; skipping IMU analysis.")
+        return
+    if df_robot.empty:
+        print("[WARN] No robot rows found; cannot compare IMU to robot.")
+        return
+
+    # convert times if necessary
+    if not np.issubdtype(df[time_col].dtype, np.number):
+        try:
+            df_imu[time_col] = pd.to_datetime(df_imu[time_col])
+            df_robot[time_col] = pd.to_datetime(df_robot[time_col])
+            tol = pd.Timedelta(seconds=time_tol)
+        except Exception:
+            tol = time_tol
+    else:
+        tol = time_tol
+
+    # pick relevant columns and drop rows with missing pos
+    imu_cols = ["imu_x", "imu_y", "imu_z", "imu_yaw_deg", "imu_pitch_deg", "imu_roll_deg"]
+    for c in imu_cols:
+        if c not in df_imu.columns:
+            print(f"[WARN] IMU column {c} not found in CSV; skipping IMU analysis.")
+            return
+
+    imu_sel = df_imu[[time_col] + imu_cols].dropna()
+    robot_sel = df_robot[[time_col] + [f"{POSE_PREFIX}{r}{c}" for r in range(4) for c in range(4)]].dropna()
+
+    if imu_sel.empty or robot_sel.empty:
+        print("[WARN] Not enough IMU or robot data for analysis.")
+        return
+
+    # convert robot pose rows to positions and yaw/pitch/roll (ZYX)
+    robot_sel = robot_sel.copy()
+    robot_sel["x_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row)[0,3], axis=1)
+    robot_sel["y_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row)[1,3], axis=1)
+    robot_sel["z_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row)[2,3], axis=1)
+    # extract robot RPY (ZYX) and convert to degrees to match IMU degrees
+    robot_sel[["r_roll", "r_pitch", "r_yaw"]] = robot_sel.apply(
+        lambda row: pd.Series(_np.degrees(H_to_xyzrpy_ZYX(pose_row_to_matrix(row))[3:6])), axis=1
+    )
+
+    # sort and merge asof
+    imu_sorted = imu_sel.sort_values(time_col)
+    robot_sorted = robot_sel.sort_values(time_col)
+
+    merged = pd.merge_asof(
+        imu_sorted,
+        robot_sorted,
+        on=time_col,
+        direction="nearest",
+        tolerance=tol,
+    )
+
+    merged = merged.dropna(subset=["x_base"])
+    if merged.empty:
+        print("[WARN] No aligned IMU<->robot samples within tolerance.")
+        return
+
+    imu_pts = merged[["imu_x", "imu_y", "imu_z"]].to_numpy(dtype=float)
+    robot_pts = merged[["x_base", "y_base", "z_base"]].to_numpy(dtype=float)
+    pos_errs = np.linalg.norm(imu_pts - robot_pts, axis=1)
+
+    # orientation errors in degrees (yaw/pitch/roll separately and norm)
+    # IMU RPY columns are named imu_yaw_deg, imu_pitch_deg, imu_roll_deg in CSV.
+    # Build arrays in robot order: roll, pitch, yaw (degrees)
+    imu_rpy = merged[["imu_roll_deg", "imu_pitch_deg", "imu_yaw_deg"]].to_numpy(dtype=float)
+    rob_rpy = merged[["r_roll", "r_pitch", "r_yaw"]].to_numpy(dtype=float)
+
+    # per-axis Euler diffs (wrap to [-180,180])
+    def wrap_deg(d):
+        return (d + 180.0) % 360.0 - 180.0
+
+    rpy_diff = wrap_deg(imu_rpy - rob_rpy)
+    rpy_abs = np.abs(rpy_diff)
+
+    def stats(vals):
+        return float(np.mean(vals)), float(np.median(vals)), float(np.percentile(vals, 95)), float(np.sqrt(np.mean(vals ** 2)))
+
+    mean_pos, med_pos, p95_pos, rmse_pos = stats(pos_errs)
+    print("\n=== IMU vs Robot ===")
+    print(f"Aligned samples: {len(pos_errs)}")
+    print(f"Position error (m): mean={mean_pos:.4f}, median={med_pos:.4f}, p95={p95_pos:.4f}, rmse={rmse_pos:.4f}")
+    print("Orientation absolute error per-axis (deg):")
+    for i, name in enumerate(["roll", "pitch", "yaw"]):
+        mean_o, med_o, p95_o, rmse_o = stats(rpy_abs[:, i])
+        print(f"  {name}: mean={mean_o:.2f}, median={med_o:.2f}, p95={p95_o:.2f}, rmse={rmse_o:.2f}")
+
+    # Also compute geodesic rotation error per-sample using full rotation matrices
+    def rpy_to_R_deg(yaw_deg, pitch_deg, roll_deg):
+        y = np.radians(yaw_deg); p = np.radians(pitch_deg); r = np.radians(roll_deg)
+        cy, sy = np.cos(y), np.sin(y)
+        cp, sp = np.cos(p), np.sin(p)
+        cr, sr = np.cos(r), np.sin(r)
+        Rz = np.array([[cy, -sy, 0.0],[sy, cy, 0.0],[0.0,0.0,1.0]])
+        Ry = np.array([[cp, 0.0, sp],[0.0,1.0,0.0],[-sp,0.0,cp]])
+        Rx = np.array([[1.0,0.0,0.0],[0.0,cr,-sr],[0.0,sr,cr]])
+        return Rz @ Ry @ Rx
+
+    geo_angles = []
+    for _, row in merged.iterrows():
+        try:
+            R_robot = pose_row_to_matrix(row)[:3,:3]
+            R_imu = rpy_to_R_deg(row.get("imu_yaw_deg"), row.get("imu_pitch_deg"), row.get("imu_roll_deg"))
+            ang = rot_geodesic_angle_deg(R_robot, R_imu)
+            geo_angles.append(ang)
+        except Exception:
+            geo_angles.append(float('nan'))
+
+    geo = np.array(geo_angles)
+    geo = geo[~np.isnan(geo)]
+    if geo.size:
+        mean_g, med_g, p95_g, rmse_g = stats(geo)
+        print(f"Geodesic rotation error (deg): mean={mean_g:.2f}, median={med_g:.2f}, p95={p95_g:.2f}, rmse={rmse_g:.2f}")
+
+
 # ---------------------------------------------------------------------
 # CSV selection
 # ---------------------------------------------------------------------
@@ -649,6 +787,12 @@ def main():
             )
     else:
         print(f"[INFO] No robot rows found (source == '{robot_name}'); skipping camera-to-robot comparison.")
+
+    # IMU vs robot analysis (if IMU rows present)
+    imu_source_candidates = [s for s in set(df[args.cam_col].astype(str).unique()) if s.lower().startswith("imu") or s == "imu"]
+    if imu_source_candidates:
+        imu_source = imu_source_candidates[0]
+        analyze_imu_vs_robot(df, imu_source, robot_source_name=robot_name, time_tol=args.time_tol, time_col=args.time_col)
 
 
 if __name__ == "__main__":
