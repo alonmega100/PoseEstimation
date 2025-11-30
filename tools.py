@@ -79,7 +79,7 @@ def matrix_to_flat_dict(prefix, mat):
 
 def list_of_movements_generator(
     num_commands: int,
-    bounds = {"x": (-0.1, 0.1), "y": (0.0, 0.25), "z": (-0.05, 0.0)},
+    bounds = {"x": (-0.1, 0.1), "y": (0.0, 0.25), "z": (-0.15, 0.0)},
     p_axis: float = 0.5,
     precision: float = 0.1,
     rng: np.random.Generator | None = None,
