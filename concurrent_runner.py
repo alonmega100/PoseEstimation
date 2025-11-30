@@ -15,6 +15,7 @@ from april_tag_processor import AprilTagProcessor
 from tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator
 from hdf5_writer import HDF5Writer
 from config import WORLD_TAG_ID, FRAME_W, FRAME_H, OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE, CAMERA_SERIALS
+from imu_reader import IMUReader
 
 
 # -------------------------------------------------
@@ -307,6 +308,30 @@ def vision_processing_thread(
                 pass
         logging.info(f"Vision processing exiting for {serial_num}")
 
+def imu_thread(stop_event: threading.Event, log_event, discard: bool, imu_reader: IMUReader):
+    """Poll IMUReader.get_latest() and push samples to the run log via log_event."""
+    logging.info("IMU thread started")
+    backoff = 0.01
+    try:
+        while not stop_event.is_set():
+            try:
+                sample = imu_reader.get_latest()
+                if sample is not None and not discard:
+                    # push the full sample dict so CSV writer can serialize it
+                    log_event("imu", "imu_sample", sample)
+
+                time.sleep(0.01)
+                backoff = 0.01
+            except KeyboardInterrupt:
+                stop_event.set()
+                break
+            except Exception as e:
+                logging.warning(f"IMU thread error: {e}")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 0.5)
+    finally:
+        logging.info("IMU thread exiting")
+
 
 # -------------------------------------------------
 # Main orchestrator
@@ -314,6 +339,15 @@ def vision_processing_thread(
 def run_concurrent_system(controller: PandaController, discard: bool = False):
     stop_event = threading.Event()
     no_more_commands_event = threading.Event()
+
+    # --- IMU setup ---
+    imu_reader = None
+    imu_t = None
+    try:
+        imu_reader = IMUReader(rate_hz=50.0)
+        imu_reader.start()
+    except Exception as e:
+        logging.warning(f"Failed to start IMUReader: {e}")
 
     # make dirs
     os.makedirs("DATA", exist_ok=True)
@@ -383,6 +417,14 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     # start all
     robot_move_t.start()
     robot_log_t.start()
+    # IMU thread
+    imu_t = threading.Thread(
+        target=imu_thread,
+        name="IMU",
+        args=(stop_event, log_event, discard, imu_reader),
+        daemon=True,
+    )
+    imu_t.start()
     for t in vision_threads:
         t.start()
     command_t.start()
@@ -423,6 +465,13 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
         for t in vision_threads:
             t.join(timeout=1.0)
         command_t.join(timeout=1.0)
+        if imu_t is not None:
+            imu_t.join(timeout=1.0)
+        if imu_reader is not None:
+            try:
+                imu_reader.stop()
+            except Exception as e:
+                logging.error(f"Failed to stop IMUReader: {e}")
 
         # write CSV
         if not discard:
@@ -487,18 +536,47 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                         })
                         continue
 
-                    # fallback
-                    safe_data = data
-                    if isinstance(safe_data, np.ndarray):
-                        safe_data = safe_data.tolist()
-                    rows_to_write.append({
-                        "timestamp": ts,
-                        "source": src,
-                        "event": ev,
-                        "raw_data": json.dumps(safe_data) if safe_data else ""
-                    })
+                    # IMU samples -> flatten key fields for CSV
+                    if src == "imu" and isinstance(data, dict):
+                        pos = data.get("pos_m") or (None, None, None)
+                        vel = data.get("vel_m_s") or (None, None, None)
+                        yaw = data.get("yaw_deg")
+                        pitch = data.get("pitch_deg")
+                        roll = data.get("roll_deg")
+                        rows_to_write.append({
+                            "timestamp": ts,
+                            "source": src,
+                            "event": ev,
+                            "raw_data": json.dumps(data),
+                            "imu_x": float(pos[0]) if pos and pos[0] is not None else "",
+                            "imu_y": float(pos[1]) if pos and pos[1] is not None else "",
+                            "imu_z": float(pos[2]) if pos and pos[2] is not None else "",
+                            "imu_yaw_deg": float(yaw) if yaw is not None else "",
+                            "imu_pitch_deg": float(pitch) if pitch is not None else "",
+                            "imu_roll_deg": float(roll) if roll is not None else "",
+                            "imu_vx": float(vel[0]) if vel and vel[0] is not None else "",
+                            "imu_vy": float(vel[1]) if vel and vel[1] is not None else "",
+                            "imu_vz": float(vel[2]) if vel and vel[2] is not None else "",
+                        })
+                    else:
+                        # fallback
+                        safe_data = data
+                        if isinstance(safe_data, np.ndarray):
+                            safe_data = safe_data.tolist()
+                        rows_to_write.append({
+                            "timestamp": ts,
+                            "source": src,
+                            "event": ev,
+                            "raw_data": json.dumps(safe_data) if safe_data else ""
+                        })
 
-            fieldnames = ["timestamp", "source", "event", "tag_id", "raw_data"] + POSE_COLS
+            # add imu flat columns for easier analysis
+            IMU_COLS = [
+                "imu_x", "imu_y", "imu_z",
+                "imu_yaw_deg", "imu_pitch_deg", "imu_roll_deg",
+                "imu_vx", "imu_vy", "imu_vz",
+            ]
+            fieldnames = ["timestamp", "source", "event", "tag_id", "raw_data"] + IMU_COLS + POSE_COLS
             try:
                 with open(log_filename, "w", newline="") as f:
                     csv_writer = csv.DictWriter(f, fieldnames=fieldnames)

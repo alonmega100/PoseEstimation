@@ -141,6 +141,12 @@ def parse_vn_vnrrg_08(line: str) -> Optional[Tuple[float, float, float]]:
         yaw = float(parts[2])
         pitch = float(parts[3])
         roll = float(parts[4])
+        # if accelerometer fields present, return them too
+        if len(parts) >= 8:
+            ax = float(parts[5])
+            ay = float(parts[6])
+            az = float(parts[7])
+            return yaw, pitch, roll, ax, ay, az
         return yaw, pitch, roll
     except Exception:
         return None
