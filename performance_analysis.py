@@ -173,6 +173,58 @@ def load_cam_to_robot_transforms(
 
     return transforms
 
+def load_imu_to_robot_transform(
+    imu_source: str,
+    transform_dir: str,
+) -> Optional[np.ndarray]:
+    """
+    Load imu->robot transform:
+
+        DATA/hand_eye/imu_<IMUSRC>_to_robot_transform.npz
+
+    We only really care about R (3x3).
+    If t is missing, we assume t = [0,0,0].
+
+    Returns a 4x4 homogeneous matrix or None.
+    """
+    fname = f"imu_{imu_source}_to_robot_transform.npz"
+    fpath = os.path.join(transform_dir, fname)
+    if not os.path.exists(fpath):
+        print(f"[INFO] No IMU transform file found for '{imu_source}' in {transform_dir}")
+        return None
+
+    try:
+        data = np.load(fpath, allow_pickle=True)
+    except Exception as e:
+        print(f"[WARN] Failed to load IMU transform {fpath}: {e}")
+        return None
+
+    if "R" not in data.files:
+        print(f"[WARN] IMU transform {fpath} missing R; ignoring.")
+        return None
+
+    R = np.asarray(data["R"], dtype=float)
+    if R.shape != (3, 3):
+        print(f"[WARN] IMU transform {fpath} has invalid R shape: {R.shape}")
+        return None
+
+    if "t" in data.files:
+        t = np.asarray(data["t"], dtype=float).reshape(-1)
+        if t.shape != (3,):
+            print(f"[WARN] IMU transform {fpath} has invalid t shape: {t.shape}, using zeros.")
+            t = np.zeros(3, dtype=float)
+    else:
+        t = np.zeros(3, dtype=float)
+
+    T = np.eye(4, dtype=float)
+    T[:3, :3] = R
+    T[:3, 3] = t
+    print(f"[INFO] Loaded IMU transform for '{imu_source}' from {fpath}")
+    return T
+
+
+
+
 
 # ---------------------------------------------------------------------
 # Pose helpers
@@ -460,7 +512,9 @@ def analyze_imu_vs_robot(
     robot_source_name: str = "robot",
     time_tol: float = 0.02,
     time_col: str = "timestamp",
+    transform_dir: str = DEFAULT_TRANSFORM_DIR,
 ):
+
     """
     Compare IMU-integrated position/yaw/pitch/roll against robot pose snapshots.
 
@@ -508,9 +562,9 @@ def analyze_imu_vs_robot(
 
     # convert robot pose rows to positions and yaw/pitch/roll (ZYX)
     robot_sel = robot_sel.copy()
-    robot_sel["x_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row)[0,3], axis=1)
-    robot_sel["y_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row)[1,3], axis=1)
-    robot_sel["z_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row)[2,3], axis=1)
+    robot_sel["x_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row)[0, 3], axis=1)
+    robot_sel["y_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row)[1, 3], axis=1)
+    robot_sel["z_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row)[2, 3], axis=1)
     # extract robot RPY (ZYX) and convert to degrees to match IMU degrees
     robot_sel[["r_roll", "r_pitch", "r_yaw"]] = robot_sel.apply(
         lambda row: pd.Series(_np.degrees(H_to_xyzrpy_ZYX(pose_row_to_matrix(row))[3:6])), axis=1
@@ -533,61 +587,106 @@ def analyze_imu_vs_robot(
         print("[WARN] No aligned IMU<->robot samples within tolerance.")
         return
 
+
+    # Load IMU->robot rotation calibration if available
+    T_imu_cal = load_imu_to_robot_transform(imu_source, transform_dir)
+    R_cal = T_imu_cal[:3, :3] if T_imu_cal is not None else None
+
+###############################################################################################
+    # --- Position errors ---
     imu_pts = merged[["imu_x", "imu_y", "imu_z"]].to_numpy(dtype=float)
     robot_pts = merged[["x_base", "y_base", "z_base"]].to_numpy(dtype=float)
-    pos_errs = np.linalg.norm(imu_pts - robot_pts, axis=1)
 
-    # orientation errors in degrees (yaw/pitch/roll separately and norm)
-    # IMU RPY columns are named imu_yaw_deg, imu_pitch_deg, imu_roll_deg in CSV.
-    # Build arrays in robot order: roll, pitch, yaw (degrees)
-    imu_rpy = merged[["imu_roll_deg", "imu_pitch_deg", "imu_yaw_deg"]].to_numpy(dtype=float)
-    rob_rpy = merged[["r_roll", "r_pitch", "r_yaw"]].to_numpy(dtype=float)
+    # Optionally align IMU positions to robot frame using calibrated R,t
+    T_imu = load_imu_to_robot_transform(imu_source, transform_dir)
+    if T_imu is not None:
+        R_imu = T_imu[:3, :3]
+        t_imu = T_imu[:3, 3]
+        imu_pts_aligned = (R_imu @ imu_pts.T).T + t_imu
+    else:
+        imu_pts_aligned = imu_pts
 
-    # per-axis Euler diffs (wrap to [-180,180])
-    def wrap_deg(d):
-        return (d + 180.0) % 360.0 - 180.0
+    pos_errs = np.linalg.norm(imu_pts_aligned - robot_pts, axis=1)   # in meters
 
-    rpy_diff = wrap_deg(imu_rpy - rob_rpy)
-    rpy_abs = np.abs(rpy_diff)
-
+    # stats helper
     def stats(vals):
-        return float(np.mean(vals)), float(np.median(vals)), float(np.percentile(vals, 95)), float(np.sqrt(np.mean(vals ** 2)))
+        vals = np.asarray(vals, dtype=float)
+        return (
+            float(np.mean(vals)),
+            float(np.median(vals)),
+            float(np.percentile(vals, 95)),
+            float(np.sqrt(np.mean(vals ** 2))),
+        )
 
-    mean_pos, med_pos, p95_pos, rmse_pos = stats(pos_errs)
-    print("\n=== IMU vs Robot ===")
-    print(f"Aligned samples: {len(pos_errs)}")
-    print(f"Position error (m): mean={mean_pos:.4f}, median={med_pos:.4f}, p95={p95_pos:.4f}, rmse={rmse_pos:.4f}")
-    print("Orientation absolute error per-axis (deg):")
-    for i, name in enumerate(["roll", "pitch", "yaw"]):
-        mean_o, med_o, p95_o, rmse_o = stats(rpy_abs[:, i])
-        print(f"  {name}: mean={mean_o:.2f}, median={med_o:.2f}, p95={p95_o:.2f}, rmse={rmse_o:.2f}")
+    mean_pos_m, med_pos_m, p95_pos_m, rmse_pos_m = stats(pos_errs)
 
-    # Also compute geodesic rotation error per-sample using full rotation matrices
+    # convert to mm for reporting (to match camera prints)
+    mean_pos_mm = mean_pos_m * MM
+    med_pos_mm = med_pos_m * MM
+    p95_pos_mm = p95_pos_m * MM
+    rmse_pos_mm = rmse_pos_m * MM
+    mse_pos_mm2 = (rmse_pos_m ** 2) * (MM ** 2)
+
+    print("\n=== IMU vs Robot (position) ===")
+    print(f"Aligned samples : {len(pos_errs)}")
+    print(f"Mean |Δp|       : {mean_pos_mm:.2f} mm")
+    print(f"Median |Δp|     : {med_pos_mm:.2f} mm")
+    print(f"95th percentile : {p95_pos_mm:.2f} mm")
+    print(f"MSE             : {mse_pos_mm2:.2f} mm^2")
+    print(f"RMSE            : {rmse_pos_mm:.2f} mm")
+    ##################################################################################################################
+
+    # --- Geodesic rotation error (deg) using full rotation matrices ---
     def rpy_to_R_deg(yaw_deg, pitch_deg, roll_deg):
-        y = np.radians(yaw_deg); p = np.radians(pitch_deg); r = np.radians(roll_deg)
+        y = np.radians(yaw_deg)
+        p = np.radians(pitch_deg)
+        r = np.radians(roll_deg)
         cy, sy = np.cos(y), np.sin(y)
         cp, sp = np.cos(p), np.sin(p)
         cr, sr = np.cos(r), np.sin(r)
-        Rz = np.array([[cy, -sy, 0.0],[sy, cy, 0.0],[0.0,0.0,1.0]])
-        Ry = np.array([[cp, 0.0, sp],[0.0,1.0,0.0],[-sp,0.0,cp]])
-        Rx = np.array([[1.0,0.0,0.0],[0.0,cr,-sr],[0.0,sr,cr]])
+        Rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
+        Ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
+        Rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
         return Rz @ Ry @ Rx
 
     geo_angles = []
     for _, row in merged.iterrows():
         try:
-            R_robot = pose_row_to_matrix(row)[:3,:3]
-            R_imu = rpy_to_R_deg(row.get("imu_yaw_deg"), row.get("imu_pitch_deg"), row.get("imu_roll_deg"))
+            R_robot = pose_row_to_matrix(row)[:3, :3]
+            R_imu_raw = rpy_to_R_deg(
+                row.get("imu_yaw_deg"),
+                row.get("imu_pitch_deg"),
+                row.get("imu_roll_deg"),
+            )
+            if R_cal is not None:
+                R_imu = R_cal @ R_imu_raw
+            else:
+                R_imu = R_imu_raw
             ang = rot_geodesic_angle_deg(R_robot, R_imu)
             geo_angles.append(ang)
         except Exception:
-            geo_angles.append(float('nan'))
+            geo_angles.append(float("nan"))
+
 
     geo = np.array(geo_angles)
     geo = geo[~np.isnan(geo)]
     if geo.size:
         mean_g, med_g, p95_g, rmse_g = stats(geo)
-        print(f"Geodesic rotation error (deg): mean={mean_g:.2f}, median={med_g:.2f}, p95={p95_g:.2f}, rmse={rmse_g:.2f}")
+
+        print("\n" + "=" * 72)
+        print("=== IMU Orientation vs Robot (Geodesic Angle, Degrees) ===")
+        print("=" * 72)
+        if R_cal is not None:
+            print("Using calibrated IMU→Robot rotation (R_cal).")
+        else:
+            print("No IMU→Robot calibration found — using raw IMU orientation.")
+
+        print(f"\nAligned samples : {geo.size}")
+        print(f"Mean error      : {mean_g:.3f}°")
+        print(f"Median error    : {med_g:.3f}°")
+        print(f"95th percentile : {p95_g:.3f}°")
+        print(f"RMS error       : {rmse_g:.3f}°")
+        print("=" * 72)
 
 
 # ---------------------------------------------------------------------
@@ -789,10 +888,20 @@ def main():
         print(f"[INFO] No robot rows found (source == '{robot_name}'); skipping camera-to-robot comparison.")
 
     # IMU vs robot analysis (if IMU rows present)
-    imu_source_candidates = [s for s in set(df[args.cam_col].astype(str).unique()) if s.lower().startswith("imu") or s == "imu"]
+    imu_source_candidates = [
+        s for s in set(df[args.cam_col].astype(str).unique())
+        if s.lower().startswith("imu") or s == "imu"
+    ]
     if imu_source_candidates:
         imu_source = imu_source_candidates[0]
-        analyze_imu_vs_robot(df, imu_source, robot_source_name=robot_name, time_tol=args.time_tol, time_col=args.time_col)
+        analyze_imu_vs_robot(
+            df,
+            imu_source,
+            robot_source_name=robot_name,
+            time_tol=args.time_tol,
+            time_col=args.time_col,
+            transform_dir=args.transform_dir,
+        )
 
 
 if __name__ == "__main__":

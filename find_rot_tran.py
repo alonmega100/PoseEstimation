@@ -2,6 +2,24 @@ import numpy as np
 import pandas as pd
 from os import listdir
 import os
+from tools import rot_geodesic_angle_deg  # for angle stats on rotations
+
+
+def rpy_to_R_deg(yaw_deg, pitch_deg, roll_deg):
+    """
+    Build a 3x3 rotation matrix from yaw, pitch, roll in degrees
+    using ZYX (yaw-pitch-roll) convention.
+    """
+    y = np.radians(yaw_deg)
+    p = np.radians(pitch_deg)
+    r = np.radians(roll_deg)
+    cy, sy = np.cos(y), np.sin(y)
+    cp, sp = np.cos(p), np.sin(p)
+    cr, sr = np.cos(r), np.sin(r)
+    Rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
+    Ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
+    Rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
+    return Rz @ Ry @ Rx
 
 csv_files = [f for f in listdir("CSV") if f.endswith(".csv")]
 sorted_files = sorted(csv_files)
@@ -137,6 +155,40 @@ def nearest_merge(cam_df, rob_df, tol=TIME_TOL):
     )
     return m.dropna(subset=["pose_03_rob"])
 
+def nearest_merge_imu(imu_df, rob_df, tol=TIME_TOL):
+    """
+    Nearest-in-time merge for IMU vs robot.
+
+    We only require IMU orientation (imu_yaw_deg, imu_pitch_deg, imu_roll_deg)
+    and robot pose (pose_ij_rob). IMU position is ignored.
+    """
+    L = imu_df.sort_values("timestamp").copy()
+    R = rob_df.sort_values("timestamp").copy()
+    m = pd.merge_asof(
+        L,
+        R,
+        on="timestamp",
+        direction="nearest",
+        tolerance=tol,
+        suffixes=("", "_rob"),  # keep IMU cols unchanged; robot pose gets _rob
+    )
+
+    needed = [
+        "imu_yaw_deg",
+        "imu_pitch_deg",
+        "imu_roll_deg",
+        "pose_00_rob",
+        "pose_01_rob",
+        "pose_02_rob",
+        "pose_10_rob",
+        "pose_11_rob",
+        "pose_12_rob",
+        "pose_20_rob",
+        "pose_21_rob",
+        "pose_22_rob",
+    ]
+    m = m.dropna(subset=[c for c in needed if c in m.columns])
+    return m
 
 def stack_and_fit_ransac(
     cam_list, robot_df, tag_id,
@@ -286,9 +338,163 @@ def fit_cam_ransac_and_save(cam_df, robot_df, src, tag_id=WORLD_TAG_ID):
         print(f"[{src}] Skip save (error):", e)
 
 
-# Find all camera sources (anything that's not 'robot')
-camera_sources = sorted(s for s in df["source"].unique() if s != "robot")
+def fit_imu_rotation_and_save(imu_df, robot_df, src, tag_for_print="IMU"):
+    """
+    Estimate a single rotation R_cal such that:
 
+        R_robot_i  ≈  R_cal @ R_imu_i
+
+    where:
+      - R_robot_i comes from the robot pose_ij_rob rotation
+      - R_imu_i   comes from imu_yaw_deg / imu_pitch_deg / imu_roll_deg
+
+    We ignore IMU XYZ (integrated position). This is a pure orientation
+    calibration. We still save a dummy t = [0,0,0] for compatibility:
+
+        DATA/hand_eye/imu_<SRC>_to_robot_transform.npz
+        with keys: R (3x3), t (3,), stats (dict), source (str)
+    """
+    if imu_df.empty:
+        print(f"[{tag_for_print} {src}] no rows for this source, skipping.")
+        return
+
+    required_cols = {"imu_yaw_deg", "imu_pitch_deg", "imu_roll_deg"}
+    if not required_cols.issubset(imu_df.columns):
+        missing = required_cols - set(imu_df.columns)
+        print(f"[{tag_for_print} {src}] missing columns {missing}, skipping.")
+        return
+
+    # Time-align IMU ↔ robot
+    m = nearest_merge_imu(imu_df, robot_df, tol=TIME_TOL)
+    if m.empty:
+        print(f"[{tag_for_print} {src}] no imu↔robot matches within {TIME_TOL}, skipping.")
+        return
+
+    # --- Build rotation pairs (R_robot_i, R_imu_i) ---
+    R_robot_list = []
+    R_imu_list = []
+
+    for _, row in m.iterrows():
+        # Robot rotation from pose_ij_rob
+        Rr = np.array([
+            [row["pose_00_rob"], row["pose_01_rob"], row["pose_02_rob"]],
+            [row["pose_10_rob"], row["pose_11_rob"], row["pose_12_rob"]],
+            [row["pose_20_rob"], row["pose_21_rob"], row["pose_22_rob"]],
+        ], dtype=float)
+
+        # IMU rotation matrix from yaw/pitch/roll (deg) in CSV
+        yaw = float(row["imu_yaw_deg"])
+        pitch = float(row["imu_pitch_deg"])
+        roll = float(row["imu_roll_deg"])
+        Ri = rpy_to_R_deg(yaw, pitch, roll)
+
+        R_robot_list.append(Rr)
+        R_imu_list.append(Ri)
+
+    if not R_robot_list:
+        print(f"[{tag_for_print} {src}] no valid IMU/robot orientation pairs, skipping.")
+        return
+
+    R_robot_arr = np.stack(R_robot_list, axis=0)  # (N,3,3)
+    R_imu_arr = np.stack(R_imu_list, axis=0)      # (N,3,3)
+
+    # --- Estimate R_cal via orthogonal Procrustes on rotations ---
+    # We want: R_robot ≈ R_cal @ R_imu  ⇒  R_cal ≈ argmin || R_cal R_imu - R_robot ||
+    M = np.zeros((3, 3), dtype=float)
+    for Rr, Ri in zip(R_robot_arr, R_imu_arr):
+        M += Rr @ Ri.T
+
+    U, _, Vt = np.linalg.svd(M)
+    R_cal = U @ Vt
+    if np.linalg.det(R_cal) < 0:
+        # Reflection fix
+        U[:, -1] *= -1
+        R_cal = U @ Vt
+
+    # --- Compute geodesic angle errors after applying R_cal ---
+    ang_errs = []
+    for Rr, Ri in zip(R_robot_arr, R_imu_arr):
+        R_imu_aligned = R_cal @ Ri
+        ang = rot_geodesic_angle_deg(Rr, R_imu_aligned)
+        ang_errs.append(ang)
+
+    ang_errs = np.asarray(ang_errs, dtype=float)
+    mean_ang = float(np.mean(ang_errs))
+    median_ang = float(np.median(ang_errs))
+    p95_ang = float(np.percentile(ang_errs, 95))
+    rms_ang = float(np.sqrt(np.mean(ang_errs ** 2)))
+    max_ang = float(np.max(ang_errs))
+
+    stats = {
+        "N_pairs": int(len(ang_errs)),
+        "mean_deg": mean_ang,
+        "median_deg": median_ang,
+        "p95_deg": p95_ang,
+        "rms_deg": rms_ang,
+        "max_deg": max_ang,
+    }
+
+    stats = {
+        "N_pairs": int(len(ang_errs)),
+        "mean_deg": mean_ang,
+        "median_deg": median_ang,
+        "p95_deg": p95_ang,
+        "rms_deg": rms_ang,
+        "max_deg": max_ang,
+    }
+
+    # Pretty printing
+    print("\n" + "=" * 72)
+    print(f"=== IMU '{src}' → Robot | Orientation-only Calibration ===")
+    print("=" * 72)
+    print("Estimated rotation (R_cal):")
+    print(R_cal)
+    print("\nAngle residual statistics (after applying R_cal):")
+    print(f"  Samples used      : {len(ang_errs)}")
+    print(f"  Mean error        : {mean_ang:.3f}°")
+    print(f"  Median error      : {median_ang:.3f}°")
+    print(f"  95th percentile   : {p95_ang:.3f}°")
+    print(f"  RMS error         : {rms_ang:.3f}°")
+    print(f"  Max error         : {max_ang:.3f}°")
+
+
+    # Save R_cal with dummy t=[0,0,0] for compatibility
+    save_path = f"DATA/hand_eye/imu_{src}_to_robot_transform.npz"
+    t_dummy = np.zeros(3, dtype=float)
+    try:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        np.savez(
+            save_path,
+            R=R_cal,
+            t=t_dummy,
+            stats=stats,
+            source=str(src),
+        )
+        print(f"[{tag_for_print} {src}] Saved orientation transform to {save_path}")
+    except Exception as e:
+        print(f"[{tag_for_print} {src}] Skip save (error):", e)
+
+# Find all sources
+all_sources = sorted(df["source"].unique())
+
+# Cameras: anything that's not robot and not an IMU
+camera_sources = [
+    s for s in all_sources
+    if s != "robot" and not str(s).lower().startswith("imu")
+]
+
+# IMUs: sources whose name starts with "imu" (e.g. "imu", "imu_vn100", etc.)
+imu_sources = [
+    s for s in all_sources
+    if str(s).lower().startswith("imu")
+]
+
+# --- Per-camera RANSAC (unchanged behavior) ---
 for src in camera_sources:
     cam_df = df[df["source"] == src]
     fit_cam_ransac_and_save(cam_df, robot, src)
+
+# --- IMU orientation calibration ---
+for src in imu_sources:
+    imu_df = df[df["source"] == src]
+    fit_imu_rotation_and_save(imu_df, robot, src)
