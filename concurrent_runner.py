@@ -314,51 +314,84 @@ def vision_processing_thread(
         logging.info(f"Vision processing exiting for {serial_num}")
 
 def imu_thread(
-            stop_event: threading.Event,
-            log_event,
-            discard: bool,
-            imu_reader: IMUReader,
-            correction_interval: float = IMU_CORRECTION_INTERVAL,
-    ):
+    stop_event: threading.Event,
+    log_event,
+    discard: bool,
+    imu_reader: IMUReader,
+    correction_interval: float = IMU_CORRECTION_INTERVAL,
+):
+    """
+    Poll IMUReader.get_latest(), log samples, and periodically snap the
+    integrated IMU position to the current OBJECT TAG pose estimated by
+    the cameras.
 
-    """Poll IMUReader.get_latest() and push samples to the run log via log_event."""
+    The world tag still defines the global origin for the cameras, but
+    the IMU "follows" the object tag: every `correction_interval` seconds
+    we take the latest object-tag pose from `shared_state["tag_pose_A"]`
+    and set the IMU position to that translation.
+    """
     logging.info("IMU thread started")
+    backoff = 0.01
     last_correction_wall = time.time()
 
-    backoff = 0.01
+    # helper to fetch the latest object-tag pose from shared_state
+    def _get_object_tag_position():
+        with state_lock:
+            tag_dict = dict(shared_state.get("tag_pose_A", {}))
+
+        if not tag_dict:
+            return None
+
+        # OBJ_TAG_IDS may be a list/tuple or a single id
+        if isinstance(OBJ_TAG_IDS, (list, tuple, set)):
+            candidate_ids = list(OBJ_TAG_IDS)
+        else:
+            candidate_ids = [OBJ_TAG_IDS]
+
+        H_obj = None
+        for cid in candidate_ids:
+            # try both raw key and stringified key
+            if cid in tag_dict:
+                H_obj = tag_dict[cid]
+                break
+            scid = str(cid)
+            if scid in tag_dict:
+                H_obj = tag_dict[scid]
+                break
+
+        if H_obj is None or not is_4x4_matrix(H_obj):
+            return None
+
+        H = np.array(H_obj, dtype=float)
+        return H[:3, 3]  # (x,y,z)
+
     try:
         while not stop_event.is_set():
             try:
+                # 1) Log latest IMU sample for CSV / HDF5
                 sample = imu_reader.get_latest()
                 if sample is not None and not discard:
-                    # push the full sample dict so CSV writer can serialize it
                     log_event("imu", "imu_sample", sample)
-                # --- Periodic camera-based correction of IMU position ---
-                now = time.time()
-                if correction_interval > 0.0 and (now - last_correction_wall) >= correction_interval:
-                    # Try to get the latest pose of the correction tag from the cameras
-                    H_tag = None
-                    with state_lock:
-                        tag_dict = shared_state.get("tag_pose_A", {})
-                        H_tag = tag_dict.get(IMU_CORRECTION_TAG_ID)
 
-                    if H_tag is not None and is_4x4_matrix(H_tag):
-                        H_tag_np = np.array(H_tag, dtype=float)
-                        tag_pos = H_tag_np[:3, 3]  # 3D position of the tag
-
-                        # Decide what velocity to set at correction time
-                        if IMU_CORRECTION_ZERO_VEL:
-                            vel_world = (0.0, 0.0, 0.0)
-                        else:
-                            latest = imu_reader.get_latest()
-                            if latest is not None:
-                                vel_world = latest.get("vel_m_s", (0.0, 0.0, 0.0))
+                # 2) Periodic drift correction using object tag pose
+                if correction_interval is not None and correction_interval > 0.0:
+                    now = time.time()
+                    if now - last_correction_wall >= correction_interval:
+                        pos_obj = _get_object_tag_position()
+                        if pos_obj is not None:
+                            # Optionally keep current velocity, or zero it.
+                            if IMU_CORRECTION_ZERO_VEL:
+                                vel = (0.0, 0.0, 0.0)
                             else:
-                                vel_world = (0.0, 0.0, 0.0)
+                                vel = None
+                                if sample is not None:
+                                    vel = sample.get("vel_m_s")
+                                if vel is None:
+                                    vel = (0.0, 0.0, 0.0)
 
-                        imu_reader.set_position(tag_pos, vel_world)
-                        last_correction_wall = now
-                    # if no tag visible, we simply skip this correction opportunity
+                            imu_reader.set_position(pos_obj, vel)
+                            logging.debug(f"IMU correction: snapping to object tag at {pos_obj}")
+                            last_correction_wall = now
 
                 time.sleep(0.01)
                 backoff = 0.01
@@ -371,7 +404,6 @@ def imu_thread(
                 backoff = min(backoff * 2, 0.5)
     finally:
         logging.info("IMU thread exiting")
-
 
 # -------------------------------------------------
 # Main orchestrator

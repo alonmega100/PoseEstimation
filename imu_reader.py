@@ -110,7 +110,8 @@ class IMUReader:
         return (a[0]*s, a[1]*s, a[2]*s)
 
     def _run(self):
-        poll_cmd = make_vn_cmd("VNRRG,8")
+        # Poll Yaw, Pitch, Roll, Magnetic, Accel, Gyro (register 27, YMR)
+        poll_cmd = make_vn_cmd("VNRRG,27")
         while not self._stop_event.is_set():
             t_loop = time.time()
 
@@ -223,21 +224,31 @@ class IMUReader:
         with self._lock:
             return None if self._latest_sample is None else dict(self._latest_sample)
 
+    def set_position(self, pos_world, vel_world=None):
+        """Hard-set the integrated position (and optionally velocity) in the world frame.
 
-    def set_position(self, pos_world, vel_world=(0.0, 0.0, 0.0)):
+        This lets external processes (e.g. the camera system) periodically correct
+        drift by snapping the IMU track to a reference position such as an
+        AprilTag-estimated object pose.
         """
-        Hard reset of the integrated position (and optionally velocity) in world frame.
+        if pos_world is None:
+            return
+        if vel_world is None:
+            vel_world = (0.0, 0.0, 0.0)
 
-        pos_world, vel_world: iterables of length 3 (x,y,z) in meters / m/s.
-        Safe to call from another thread (e.g. fusion/correction thread).
-        """
-        x, y, z = pos_world
-        vx, vy, vz = vel_world
+        try:
+            x, y, z = pos_world
+        except Exception:
+            return
+        try:
+            vx, vy, vz = vel_world
+        except Exception:
+            vx, vy, vz = 0.0, 0.0, 0.0
 
         with self._lock:
             self._pos = (float(x), float(y), float(z))
             self._vel = (float(vx), float(vy), float(vz))
-            # Optional: forget last accel so next integration step starts clean
+            # reset integration history so we don't mix pre/post correction accel
             self._last_acc_world = None
 
     def stop(self):

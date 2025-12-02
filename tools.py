@@ -130,23 +130,49 @@ def make_vn_cmd(body: str) -> bytes:
     return f"${body}*{cs:02X}\r\n".encode("ascii")
 
 
-def parse_vn_vnrrg_08(line: str) -> Optional[Tuple[float, float, float]]:
-    if not line.startswith("$VNRRG,08"):
+
+
+def parse_vn_vnrrg_08(line: str) -> Optional[Tuple[float, ...]]:
+    """
+    Parse VectorNav ASCII response for a few useful registers.
+
+    Supports:
+    - $VNRRG,08,...  -> yaw, pitch, roll (no accel)
+    - $VNRRG,27,...  -> yaw, pitch, roll, accelX, accelY, accelZ  (YMR)
+
+    Returns:
+        (yaw_deg, pitch_deg, roll_deg)
+    or
+        (yaw_deg, pitch_deg, roll_deg, ax, ay, az)
+    """
+    if not line.startswith("$VNRRG,"):
         return None
     try:
         data_part = line.split("*", 1)[0]
         parts = data_part.split(",")
         if len(parts) < 5:
             return None
+
+        reg_id = parts[1]
         yaw = float(parts[2])
         pitch = float(parts[3])
         roll = float(parts[4])
-        # if accelerometer fields present, return them too
-        if len(parts) >= 8:
-            ax = float(parts[5])
-            ay = float(parts[6])
-            az = float(parts[7])
+
+        if reg_id == "08":
+            # Plain YPR register: yaw, pitch, roll only
+            return yaw, pitch, roll
+
+        if reg_id == "27":
+            # YMR: yaw, pitch, roll, magX, magY, magZ, accelX, accelY, accelZ, gyroX, gyroY, gyroZ
+            # indices: 2=yaw, 3=pitch, 4=roll, 5=magX, 6=magY, 7=magZ, 8=accX, 9=accY, 10=accZ, ...
+            if len(parts) < 11:
+                return yaw, pitch, roll
+            ax = float(parts[8])
+            ay = float(parts[9])
+            az = float(parts[10])
             return yaw, pitch, roll, ax, ay, az
+
+        # Fallback: at least return orientation
         return yaw, pitch, roll
     except Exception:
         return None
