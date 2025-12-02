@@ -22,6 +22,11 @@ from imu_reader import IMUReader
 # Config
 # -------------------------------------------------
 
+
+IMU_CORRECTION_INTERVAL = 3.0   # seconds; how often to "snap" IMU to camera tag
+IMU_CORRECTION_ZERO_VEL = True  # zero IMU velocity at correction
+IMU_CORRECTION_TAG_ID = 2  # which tag to use as the ground-truth position
+
 TARGET_LOG_HZ = 30.0     # robot logger rate
 LOG_INTERVAL = 1.0 / TARGET_LOG_HZ
 NUM_OF_COMMANDS_TO_GENERATE = 20
@@ -308,9 +313,18 @@ def vision_processing_thread(
                 pass
         logging.info(f"Vision processing exiting for {serial_num}")
 
-def imu_thread(stop_event: threading.Event, log_event, discard: bool, imu_reader: IMUReader):
+def imu_thread(
+            stop_event: threading.Event,
+            log_event,
+            discard: bool,
+            imu_reader: IMUReader,
+            correction_interval: float = IMU_CORRECTION_INTERVAL,
+    ):
+
     """Poll IMUReader.get_latest() and push samples to the run log via log_event."""
     logging.info("IMU thread started")
+    last_correction_wall = time.time()
+
     backoff = 0.01
     try:
         while not stop_event.is_set():
@@ -319,6 +333,32 @@ def imu_thread(stop_event: threading.Event, log_event, discard: bool, imu_reader
                 if sample is not None and not discard:
                     # push the full sample dict so CSV writer can serialize it
                     log_event("imu", "imu_sample", sample)
+                # --- Periodic camera-based correction of IMU position ---
+                now = time.time()
+                if correction_interval > 0.0 and (now - last_correction_wall) >= correction_interval:
+                    # Try to get the latest pose of the correction tag from the cameras
+                    H_tag = None
+                    with state_lock:
+                        tag_dict = shared_state.get("tag_pose_A", {})
+                        H_tag = tag_dict.get(IMU_CORRECTION_TAG_ID)
+
+                    if H_tag is not None and is_4x4_matrix(H_tag):
+                        H_tag_np = np.array(H_tag, dtype=float)
+                        tag_pos = H_tag_np[:3, 3]  # 3D position of the tag
+
+                        # Decide what velocity to set at correction time
+                        if IMU_CORRECTION_ZERO_VEL:
+                            vel_world = (0.0, 0.0, 0.0)
+                        else:
+                            latest = imu_reader.get_latest()
+                            if latest is not None:
+                                vel_world = latest.get("vel_m_s", (0.0, 0.0, 0.0))
+                            else:
+                                vel_world = (0.0, 0.0, 0.0)
+
+                        imu_reader.set_position(tag_pos, vel_world)
+                        last_correction_wall = now
+                    # if no tag visible, we simply skip this correction opportunity
 
                 time.sleep(0.01)
                 backoff = 0.01
@@ -421,9 +461,10 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     imu_t = threading.Thread(
         target=imu_thread,
         name="IMU",
-        args=(stop_event, log_event, discard, imu_reader),
+        args=(stop_event, log_event, discard, imu_reader, IMU_CORRECTION_INTERVAL),
         daemon=True,
     )
+
     imu_t.start()
     for t in vision_threads:
         t.start()

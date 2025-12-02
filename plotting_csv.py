@@ -86,13 +86,52 @@ def extract_points(csv_path: str):
             evt = (row.get("event") or "").strip()
             ts = (row.get("timestamp") or "").strip()
 
+            # Robot / camera rows that contain a flattened 4×4 pose_ij
             if _row_has_flat_pose(row):
                 H = _flat_pose_from_row(row)
                 x, y, z = float(H[0, 3]), float(H[1, 3]), float(H[2, 3])
                 tag_id = (row.get("tag_id") or "").strip() or None
                 kind = "camera" if evt == "tag_pose_snapshot" or (src and src.lower() != "robot") else "robot"
-                points.append(dict(timestamp=ts, source=src, kind=kind, event=evt,
-                                   tag_id=tag_id, x=x, y=y, z=z))
+                points.append(
+                    dict(
+                        timestamp=ts,
+                        source=src,
+                        kind=kind,
+                        event=evt,
+                        tag_id=tag_id,
+                        x=x,
+                        y=y,
+                        z=z,
+                    )
+                )
+
+            # IMU rows: use integrated position imu_x/imu_y/imu_z
+            elif src == "imu":
+                x_str = row.get("imu_x", "")
+                y_str = row.get("imu_y", "")
+                z_str = row.get("imu_z", "")
+                if not x_str or not y_str or not z_str:
+                    continue
+                try:
+                    x = float(x_str)
+                    y = float(y_str)
+                    z = float(z_str)
+                except Exception:
+                    # skip malformed IMU row
+                    continue
+
+                points.append(
+                    dict(
+                        timestamp=ts,
+                        source=src,
+                        kind="imu",
+                        event=evt,
+                        tag_id=None,
+                        x=x,
+                        y=y,
+                        z=z,
+                    )
+                )
     return points
 
 
@@ -158,6 +197,7 @@ def build_figure(points: List[Dict[str, Any]],
     robots = [p for p in points if p["kind"] == "robot"]
     cams = [p for p in points if p["kind"] == "camera"]
     cams_aligned = [p for p in points if p["kind"] == "camera_aligned"]
+    imus = [p for p in points if p["kind"] == "imu"]
 
     def color_for(i):
         colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
@@ -174,7 +214,7 @@ def build_figure(points: List[Dict[str, Any]],
             hovertemplate="x=%{x:.3f}<br>y=%{y:.3f}<br>z=%{z:.3f}<extra>Robot</extra>"
         ))
 
-    def add_traces(data, label_suffix="", size=3, offset=0):
+    def add_traces(data, label_suffix: str = "", size: int = 3, offset: int = 0, base_label: str = "Camera"):
         by_src = {}
         for p in data:
             by_src.setdefault(p["source"], []).append(p)
@@ -182,19 +222,29 @@ def build_figure(points: List[Dict[str, Any]],
             color = color_for(i + offset)
             pts = sorted(pts, key=lambda p: p["_idx"])
             fig.add_trace(go.Scatter3d(
-                x=[p["x"] for p in pts], y=[p["y"] for p in pts], z=[p["z"] for p in pts],
+                x=[p["x"] for p in pts],
+                y=[p["y"] for p in pts],
+                z=[p["z"] for p in pts],
                 mode="markers+lines" if connect_cameras else "markers",
                 marker=dict(size=size, color=color),
                 line=dict(width=2, color=color),
-                name=f"Camera {src}{label_suffix}",
+                name=f"{base_label} {src}{label_suffix}",
             ))
 
-    add_traces(cams)
-    add_traces(cams_aligned, " (aligned)", size=4, offset=5)
+    # Cameras (raw and aligned)
+    add_traces(cams, base_label="Camera")
+    add_traces(cams_aligned, " (aligned)", size=4, offset=5, base_label="Camera")
 
-    fig.update_layout(scene=dict(aspectmode="data"),
-                      title="3D Robot & Camera Observations",
-                      margin=dict(l=0, r=0, b=0, t=40))
+    # IMU integrated trajectory (snaps to object tag every few seconds)
+    if imus:
+        add_traces(imus, label_suffix=" (IMU)", size=4, offset=10, base_label="IMU")
+
+    fig.update_layout(
+        scene=dict(aspectmode="data"),
+        title="3D Robot, Camera & IMU Observations",
+        margin=dict(l=0, r=0, b=0, t=40),
+    )
+
     return fig
 
 

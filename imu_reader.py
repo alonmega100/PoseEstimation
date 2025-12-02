@@ -223,6 +223,23 @@ class IMUReader:
         with self._lock:
             return None if self._latest_sample is None else dict(self._latest_sample)
 
+
+    def set_position(self, pos_world, vel_world=(0.0, 0.0, 0.0)):
+        """
+        Hard reset of the integrated position (and optionally velocity) in world frame.
+
+        pos_world, vel_world: iterables of length 3 (x,y,z) in meters / m/s.
+        Safe to call from another thread (e.g. fusion/correction thread).
+        """
+        x, y, z = pos_world
+        vx, vy, vz = vel_world
+
+        with self._lock:
+            self._pos = (float(x), float(y), float(z))
+            self._vel = (float(vx), float(vy), float(vz))
+            # Optional: forget last accel so next integration step starts clean
+            self._last_acc_world = None
+
     def stop(self):
         self._stop_event.set()
         if self._thread is not None:
