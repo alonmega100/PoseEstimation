@@ -24,12 +24,14 @@ for i in range(100):
         imu_yaw = imu_sample.get("yaw_deg", float("nan"))
         imu_pitch = imu_sample.get("pitch_deg", float("nan"))
         imu_roll = imu_sample.get("roll_deg", float("nan"))
-        acc = imu_sample.get("acc_world_m_s2", None)            # (ax,ay,az) in world frame or None
+        acc_body = imu_sample.get("acc_body", None) # I added this line
+        acc_world = imu_sample.get("acc_world_m_s2", None)            # (ax,ay,az) in world frame or None
         vel = imu_sample.get("vel_m_s", (float("nan"),)*3)     # (vx,vy,vz)
         pos = imu_sample.get("pos_m", (float("nan"),)*3)       # (x,y,z)
     else:
         imu_t = imu_yaw = imu_pitch = imu_roll = float("nan")
-        acc = None
+        acc_world = None
+        acc_body = None
         vel = pos = (float("nan"),)*3
 
     row = {
@@ -37,7 +39,8 @@ for i in range(100):
         "imu_yaw_deg": imu_yaw,
         "imu_pitch_deg": imu_pitch,
         "imu_roll_deg": imu_roll,
-        "acc_world_m_s2": acc,
+        "acc_body": acc_body,
+        "acc_world_m_s2": acc_world,
         "vel_m_s": vel,
         "pos_m": pos,
     }

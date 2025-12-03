@@ -128,6 +128,8 @@ class IMUReader:
                     parsed = parse_vn_vnrrg_08(line)
                     if parsed is not None:
                         # handle either (yaw,pitch,roll) or (yaw,pitch,roll,ax,ay,az,...)
+                        acc_body = None  # default if accel is not present
+
                         if isinstance(parsed, (list, tuple)):
                             if len(parsed) >= 6:
                                 yaw, pitch, roll, ax, ay, az = parsed[:6]
@@ -191,6 +193,7 @@ class IMUReader:
                             "yaw_deg": float(yaw),
                             "pitch_deg": float(pitch),
                             "roll_deg": float(roll),
+                            "acc_body": acc_body, # I added this line
                             "acc_world_m_s2": acc_world,  # None or (ax,ay,az)
                             "vel_m_s": self._vel,
                             "pos_m": self._pos,
@@ -215,7 +218,8 @@ class IMUReader:
             "yaw_deg": float,
             "pitch_deg": float,
             "roll_deg": float,
-            "acc_world_m_s2": (ax,ay,az) or None,
+            "acc_body": (ax,ay,az) or None,        # raw body-frame specific force
+            "acc_world_m_s2": (ax,ay,az) or None,  # world-frame linear accel (after analysis)
             "vel_m_s": (vx,vy,vz),
             "pos_m": (x,y,z)
         }
@@ -264,21 +268,33 @@ class IMUReader:
             self._ser = None
 
 def process_imu_sample(imu_sample):
-    # python
     if isinstance(imu_sample, dict):
         imu_t = imu_sample.get("t_sec")
         imu_yaw = imu_sample.get("yaw_deg")
         imu_pitch = imu_sample.get("pitch_deg")
         imu_roll = imu_sample.get("roll_deg")
         # optional accelerations if present:
-        acc = imu_sample.get("acc_world_m_s2")
-        if acc is not None:
-            ax, ay, az = acc
+        acc_world = imu_sample.get("acc_world_m_s2")
+        acc_body = imu_sample.get("acc_body")
+
+        if acc_world is not None:
+            ax_w, ay_w, az_w = acc_world
+        else:
+            ax_w = ay_w = az_w = None
+
+        if acc_body is not None:
+            ax_b, ay_b, az_b = acc_body
+        else:
+            ax_b = ay_b = az_b = None
+
     else:
         # tuple/list: accept extra fields
         if len(imu_sample) >= 4:
             imu_t, imu_yaw, imu_pitch, imu_roll, *rest = imu_sample
             if len(rest) >= 3:
-                ax, ay, az = rest[:3]
+                ax_w, ay_w, az_w = rest[:3]
+            else:
+                ax_w = ay_w = az_w = None
+            ax_b = ay_b = az_b = None
         else:
             raise ValueError("imu_sample has fewer than 4 elements")
