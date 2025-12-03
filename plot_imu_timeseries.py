@@ -7,6 +7,26 @@ import glob
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+MOVING_AVG_WINDOW = 200  # number of samples in the moving average window
+
+
+def moving_average(values, window):
+    """Simple trailing moving average. Returns list of same length, NaN until window is full."""
+    if window <= 1:
+        return list(values)
+
+    out = []
+    cumsum = 0.0
+    for i, v in enumerate(values):
+        cumsum += v
+        if i >= window:
+            cumsum -= values[i - window]
+        if i >= window - 1:
+            out.append(cumsum / window)
+        else:
+            out.append(float("nan"))
+    return out
+
 
 # ---------------------------------------------------------------
 # Find latest CSV in ./CSV/
@@ -79,6 +99,19 @@ def plot_with_plotly(t, wax, way, waz, bax, bay, baz, yaw, pitch, roll, title):
         t0 = t[0]
         t = [ti - t0 for ti in t]
 
+    # Pre-compute moving averages
+    wax_ma = moving_average(wax, MOVING_AVG_WINDOW)
+    way_ma = moving_average(way, MOVING_AVG_WINDOW)
+    waz_ma = moving_average(waz, MOVING_AVG_WINDOW)
+
+    bax_ma = moving_average(bax, MOVING_AVG_WINDOW)
+    bay_ma = moving_average(bay, MOVING_AVG_WINDOW)
+    baz_ma = moving_average(baz, MOVING_AVG_WINDOW)
+
+    yaw_ma = moving_average(yaw, MOVING_AVG_WINDOW)
+    pitch_ma = moving_average(pitch, MOVING_AVG_WINDOW)
+    roll_ma = moving_average(roll, MOVING_AVG_WINDOW)
+
     fig = make_subplots(
         rows=3,
         cols=3,
@@ -89,26 +122,41 @@ def plot_with_plotly(t, wax, way, waz, bax, bay, baz, yaw, pitch, roll, title):
         )
     )
 
-    # Row 1: world-frame accelerations (after analysis)
-    fig.add_trace(go.Scatter(x=t, y=wax, mode="lines", name="a_world_x"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=t, y=way, mode="lines", name="a_world_y"), row=1, col=2)
-    fig.add_trace(go.Scatter(x=t, y=waz, mode="lines", name="a_world_z"), row=1, col=3)
+    # Row 1: world-frame accelerations
+    fig.add_trace(go.Scatter(x=t, y=wax,    mode="lines", name="a_world_x"),        row=1, col=1)
+    fig.add_trace(go.Scatter(x=t, y=wax_ma, mode="lines", name="a_world_x (MA)"),   row=1, col=1)
 
-    # Row 2: body-frame accelerations (before analysis)
-    fig.add_trace(go.Scatter(x=t, y=bax, mode="lines", name="a_body_x"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=t, y=bay, mode="lines", name="a_body_y"), row=2, col=2)
-    fig.add_trace(go.Scatter(x=t, y=baz, mode="lines", name="a_body_z"), row=2, col=3)
+    fig.add_trace(go.Scatter(x=t, y=way,    mode="lines", name="a_world_y"),        row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=way_ma, mode="lines", name="a_world_y (MA)"),   row=1, col=2)
+
+    fig.add_trace(go.Scatter(x=t, y=waz,    mode="lines", name="a_world_z"),        row=1, col=3)
+    fig.add_trace(go.Scatter(x=t, y=waz_ma, mode="lines", name="a_world_z (MA)"),   row=1, col=3)
+
+    # Row 2: body-frame accelerations
+    fig.add_trace(go.Scatter(x=t, y=bax,    mode="lines", name="a_body_x"),         row=2, col=1)
+    fig.add_trace(go.Scatter(x=t, y=bax_ma, mode="lines", name="a_body_x (MA)"),    row=2, col=1)
+
+    fig.add_trace(go.Scatter(x=t, y=bay,    mode="lines", name="a_body_y"),         row=2, col=2)
+    fig.add_trace(go.Scatter(x=t, y=bay_ma, mode="lines", name="a_body_y (MA)"),    row=2, col=2)
+
+    fig.add_trace(go.Scatter(x=t, y=baz,    mode="lines", name="a_body_z"),         row=2, col=3)
+    fig.add_trace(go.Scatter(x=t, y=baz_ma, mode="lines", name="a_body_z (MA)"),    row=2, col=3)
 
     # Row 3: orientations
-    fig.add_trace(go.Scatter(x=t, y=yaw, mode="lines", name="yaw"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=t, y=pitch, mode="lines", name="pitch"), row=3, col=2)
-    fig.add_trace(go.Scatter(x=t, y=roll, mode="lines", name="roll"), row=3, col=3)
+    fig.add_trace(go.Scatter(x=t, y=yaw,    mode="lines", name="yaw"),              row=3, col=1)
+    fig.add_trace(go.Scatter(x=t, y=yaw_ma, mode="lines", name="yaw (MA)"),         row=3, col=1)
+
+    fig.add_trace(go.Scatter(x=t, y=pitch,  mode="lines", name="pitch"),            row=3, col=2)
+    fig.add_trace(go.Scatter(x=t, y=pitch_ma, mode="lines", name="pitch (MA)"),     row=3, col=2)
+
+    fig.add_trace(go.Scatter(x=t, y=roll,   mode="lines", name="roll"),             row=3, col=3)
+    fig.add_trace(go.Scatter(x=t, y=roll_ma, mode="lines", name="roll (MA)"),       row=3, col=3)
 
     fig.update_layout(
         height=1000,
         width=1200,
         title_text=title,
-        showlegend=False
+        showlegend=True,
     )
 
     fig.show()
