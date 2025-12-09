@@ -9,37 +9,47 @@ from tools import to_H, inv_H
 from config import FRAME_W, FRAME_H, FPS, WORLD_TAG_ID, WORLD_TAG_SIZE, OBJ_TAG_SIZE, OBJ_TAG_IDS
 
 
-class RealSenseColorCap:
-    """Encapsulates the Intel RealSense camera setup and frame reading."""
-
+class RealSenseInfraredCap:
     def __init__(self, serial, w, h, fps):
         self.serial = serial
         self.pipe = rs.pipeline()
         self.cfg = rs.config()
         self.cfg.enable_device(str(serial))
-        self.cfg.enable_stream(rs.stream.color, w, h, rs.format.bgr8, fps)
+
+        # Stream Infrared 1 (Left Imager = Depth Origin)
+        self.cfg.enable_stream(rs.stream.infrared, 1, w, h, rs.format.y8, fps)
+
         self.profile = self.pipe.start(self.cfg)
 
-        vsp = rs.video_stream_profile(self.profile.get_stream(rs.stream.color))
+        # --- NEW CODE: DISABLE LASER EMITTER ---
+        device = self.profile.get_device()
+        depth_sensor = device.first_depth_sensor()
+
+        if depth_sensor.supports(rs.option.emitter_enabled):
+            depth_sensor.set_option(rs.option.emitter_enabled, 0.0)  # 0 = Off
+        # ---------------------------------------
+
+        # Get intrinsics
+        vsp = rs.video_stream_profile(self.profile.get_stream(rs.stream.infrared, 1))
         intr = vsp.get_intrinsics()
         self.K = np.array([[intr.fx, 0, intr.ppx],
                            [0, intr.fy, intr.ppy],
                            [0, 0, 1]], np.float32)
         self.D = np.array(intr.coeffs[:5], np.float32)
-        print(f"[cam] {serial}: {intr.width}x{intr.height}@{fps}")
-
+        print(f"[cam-IR] {serial}: {intr.width}x{intr.height}@{fps} (Emitter OFF)")
     def read(self):
         frames = self.pipe.wait_for_frames()
-        c = frames.get_color_frame()
-        if not c: return False, None
-        return True, np.asanyarray(c.get_data())
+        # MODIFIED: Get infrared frame instead of color
+        ir = frames.get_infrared_frame(1)
+        if not ir: return False, None
+        # Return the data directly (it is already a numpy array of uint8)
+        return True, np.asanyarray(ir.get_data())
 
     def release(self):
         try:
             self.pipe.stop()
         except:
             pass
-
 
 class AprilTagProcessor:
     """
@@ -52,7 +62,7 @@ class AprilTagProcessor:
         self.WORLD_TAG_SIZE = world_tag_size
         self.OBJ_TAG_SIZE = obj_tag_size
         self.OBJ_TAG_IDS = obj_tag_ids
-        self.cap = RealSenseColorCap(serial, w, h, fps)
+        self.cap = RealSenseInfraredCap(serial, w, h, fps)
 
         # Initialize detector once
         self.detector = Detector(
@@ -116,7 +126,7 @@ class AprilTagProcessor:
             return np.zeros((FRAME_H, FRAME_W, 3), np.uint8), {}
 
         # --- Pre-processing ---
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = frame
         newK, _ = cv2.getOptimalNewCameraMatrix(self.cap.K, self.cap.D, gray.shape[::-1], 1.0)
         undist = cv2.undistort(gray, self.cap.K, self.cap.D, None, newK)
         vis = cv2.cvtColor(undist, cv2.COLOR_GRAY2BGR)
