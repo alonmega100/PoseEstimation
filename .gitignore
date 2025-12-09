@@ -3,11 +3,13 @@ __pycache__/
 *.pyc
 .idea/
 ransac.py
-# ignore all runtime data inside CSV
+
+# Ignore all runtime data inside data/CSV
 data/CSV/*.csv
 data/CSV/*.html
+
+# Ignore all calibration data inside data/DATA
 data/DATA/**/*.npz
 
-!CSV/.gitkeepDATA/
-DATA/
-DATA/
+# Explicitly track the .gitkeep file so the folder structure is committed
+!data/CSV/.gitkeep
