@@ -2,9 +2,9 @@ import numpy as np
 import cv2
 
 from pupil_apriltags import Detector
-from tools import to_H, inv_H
-from config import FRAME_W, FRAME_H, FPS, WORLD_TAG_ID
-from realsense_driver import RealSenseInfraredCap
+from src.utils.tools import to_H, inv_H
+from src.utils.config import FRAME_W, FRAME_H, FPS, WORLD_TAG_ID
+from src.vision.realsense_driver import RealSenseInfraredCap
 
 
 

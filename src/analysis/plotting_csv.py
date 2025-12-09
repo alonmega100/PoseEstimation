@@ -3,35 +3,35 @@ import csv
 import json
 import ast
 import argparse
-from typing import Dict, Any, List, Tuple, Iterable
 import numpy as np
 import plotly.graph_objects as go
 import re
 import os
 import glob
+
 from pathlib import Path
-# UPDATED: Added moving_average to imports
-from tools import apply_rt_to_camera_points, apply_rt_to_camera_points_per_cam, moving_average
+from typing import Dict, Any, List, Tuple
+from src.utils.tools import apply_rt_to_camera_points, apply_rt_to_camera_points_per_cam, moving_average
 
 
 # -----------------------------------------------------------
 # Helpers for finding latest CSV or NPZ
 # -----------------------------------------------------------
-def _find_latest_csv(pattern: str = "CSV/session_log_*.csv") -> str | None:
+def _find_latest_csv(pattern: str = "data/CSV/session_log_*.csv") -> str | None:
     files = glob.glob(pattern)
     if not files:
         return None
     return max(files, key=os.path.getmtime)
 
 
-def _find_default_transform(pattern: str = "DATA/hand_eye/*.npz") -> str | None:
+def _find_default_transform(pattern: str = "data/DATA/hand_eye/*.npz") -> str | None:
     files = glob.glob(pattern)
     if not files:
         return None
     return max(files, key=os.path.getmtime)
 
 
-def _find_cam_transform(src: str, directory: str = "DATA/hand_eye") -> str | None:
+def _find_cam_transform(src: str, directory: str = "data/DATA/hand_eye") -> str | None:
     """
     Look for a per-camera transform file:
         <directory>/cam_<SRC>_to_robot_transform.npz
@@ -213,7 +213,7 @@ def build_figure(points: List[Dict[str, Any]],
 # -----------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description="Plot 3D robot & camera observations from session log CSV")
-    ap.add_argument("--csv", help="Path to session_log_*.csv (defaults to latest CSV in CSV/)")
+    ap.add_argument("--csv", help="Path to session_log_*.csv (defaults to latest CSV in data/CSV/)")
     ap.add_argument(
         "--transform",
         help="Path to NPZ transform (single transform for all cameras; "
@@ -221,9 +221,9 @@ def main():
     )
     ap.add_argument(
         "--transform-dir",
-        default="DATA/hand_eye",
+        default="data/DATA/hand_eye",
         help="Directory containing per-camera transforms named "
-             "cam_<SOURCE>_to_robot_transform.npz (default: DATA/hand_eye)"
+             "cam_<SOURCE>_to_robot_transform.npz (default: data/DATA/hand_eye)"
     )
     ap.add_argument("--only-aligned", action="store_true", help="Plot only aligned camera traces")
     ap.add_argument("--group-by-tag", action="store_true", default=True)
@@ -238,7 +238,7 @@ def main():
     # Auto-select latest CSV
     csv_path = args.csv or _find_latest_csv()
     if not csv_path:
-        print("No CSV found in CSV/. Exiting.")
+        print("No CSV found in data/CSV/. Exiting.")
         return
     print(f"Using CSV: {csv_path}")
 

@@ -10,12 +10,13 @@ from typing import Dict, Optional
 import os
 import datetime
 import json
-from panda_controller import PandaController, DEFAULT_SPEED_FACTOR
-from april_tag_processor import AprilTagProcessor
-from tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator
-from hdf5_writer import HDF5Writer
-from config import WORLD_TAG_ID, FRAME_W, FRAME_H, OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE, CAMERA_SERIALS
-from imu_reader import IMUReader
+
+from src.robot.panda_controller import PandaController, DEFAULT_SPEED_FACTOR
+from src.vision.april_tag_processor import AprilTagProcessor
+from src.utils.tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator
+from src.utils.hdf5_writer import HDF5Writer
+from src.utils.config import OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE, CAMERA_SERIALS
+from src.imu.imu_reader import IMUReader
 
 
 # -------------------------------------------------
@@ -422,13 +423,13 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
         logging.warning(f"Failed to start IMUReader: {e}")
 
     # make dirs
-    os.makedirs("DATA", exist_ok=True)
-    os.makedirs("CSV", exist_ok=True)
+    os.makedirs("../../data/DATA", exist_ok=True)
+    os.makedirs("../../data/CSV", exist_ok=True)
     writer = None
     if not discard:
 
         # HDF5 writer
-        writer = HDF5Writer("DATA/session.h5", "session")
+        writer = HDF5Writer("../../data/DATA/session.h5", "session")
         writer.start()
         run_id = datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
         writer.add_run(run_id, force=0, dx=0, dy=0, angle=0)
@@ -552,7 +553,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
         # write CSV
         if not discard:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_filename = f"CSV/session_log_{timestamp}.csv"
+            log_filename = f"data/CSV/session_log_{timestamp}.csv"
 
             rows_to_write = []
             with log_lock:

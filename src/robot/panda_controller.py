@@ -1,8 +1,8 @@
-import time
 import numpy as np
+
 from panda_py import Panda
 from scipy.spatial.transform import Rotation as R
-from config import ROBOT_IP, DEFAULT_SPEED_FACTOR
+from src.utils.config import DEFAULT_SPEED_FACTOR
 
 # --- CONFIGURATION CONSTANTS ---
 

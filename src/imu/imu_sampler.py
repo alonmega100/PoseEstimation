@@ -1,6 +1,5 @@
-from imu_reader import IMUReader
+from src.imu.imu_reader import IMUReader
 import time
-import math
 
 imu = IMUReader(port="/dev/ttyUSB0", rate_hz=50.0)
 imu.start()

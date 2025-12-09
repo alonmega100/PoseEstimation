@@ -4,7 +4,10 @@ __pycache__/
 .idea/
 ransac.py
 # ignore all runtime data inside CSV
-CSV/*
+data/CSV/*.csv
+data/CSV/*.html
+data/DATA/**/*.npz
+
 !CSV/.gitkeepDATA/
 DATA/
 DATA/

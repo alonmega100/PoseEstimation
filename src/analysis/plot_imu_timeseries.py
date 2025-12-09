@@ -6,20 +6,21 @@ import os
 import glob
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from tools import moving_average
-
+from src.utils.tools import moving_average
 
 MOVING_AVG_WINDOW = 200  # number of samples in the moving average window
 
 
-
-
 # ---------------------------------------------------------------
-# Find latest CSV in ./CSV/
+# Find latest CSV in ./data/CSV/
 # ---------------------------------------------------------------
 def find_latest_csv():
-    os.makedirs("CSV", exist_ok=True)
-    csvs = glob.glob(os.path.join("CSV", "*.csv"))
+    # Looking in data/CSV relative to project root
+    search_path = "data/CSV"
+    if not os.path.exists(search_path):
+        return None
+
+    csvs = glob.glob(os.path.join(search_path, "*.csv"))
     if not csvs:
         return None
     csvs.sort(key=lambda p: os.path.getmtime(p))
@@ -30,8 +31,8 @@ def find_latest_csv():
 # Load IMU rows
 # ---------------------------------------------------------------
 def load_imu_from_csv(csv_path):
-    t, wax, way, waz = [], [], [], []          # world-frame accel (after analysis)
-    bax, bay, baz = [], [], []          # body-frame accel (before analysis)
+    t, wax, way, waz = [], [], [], []  # world-frame accel (after analysis)
+    bax, bay, baz = [], [], []  # body-frame accel (before analysis)
     yaw, pitch, roll = [], [], []
 
     with open(csv_path, newline="") as f:
@@ -109,34 +110,34 @@ def plot_with_plotly(t, wax, way, waz, bax, bay, baz, yaw, pitch, roll, title):
     )
 
     # Row 1: world-frame accelerations
-    fig.add_trace(go.Scatter(x=t, y=wax,    mode="lines", name="a_world_x"),        row=1, col=1)
-    fig.add_trace(go.Scatter(x=t, y=wax_ma, mode="lines", name="a_world_x (MA)"),   row=1, col=1)
+    fig.add_trace(go.Scatter(x=t, y=wax, mode="lines", name="a_world_x"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t, y=wax_ma, mode="lines", name="a_world_x (MA)"), row=1, col=1)
 
-    fig.add_trace(go.Scatter(x=t, y=way,    mode="lines", name="a_world_y"),        row=1, col=2)
-    fig.add_trace(go.Scatter(x=t, y=way_ma, mode="lines", name="a_world_y (MA)"),   row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=way, mode="lines", name="a_world_y"), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=way_ma, mode="lines", name="a_world_y (MA)"), row=1, col=2)
 
-    fig.add_trace(go.Scatter(x=t, y=waz,    mode="lines", name="a_world_z"),        row=1, col=3)
-    fig.add_trace(go.Scatter(x=t, y=waz_ma, mode="lines", name="a_world_z (MA)"),   row=1, col=3)
+    fig.add_trace(go.Scatter(x=t, y=waz, mode="lines", name="a_world_z"), row=1, col=3)
+    fig.add_trace(go.Scatter(x=t, y=waz_ma, mode="lines", name="a_world_z (MA)"), row=1, col=3)
 
     # Row 2: body-frame accelerations
-    fig.add_trace(go.Scatter(x=t, y=bax,    mode="lines", name="a_body_x"),         row=2, col=1)
-    fig.add_trace(go.Scatter(x=t, y=bax_ma, mode="lines", name="a_body_x (MA)"),    row=2, col=1)
+    fig.add_trace(go.Scatter(x=t, y=bax, mode="lines", name="a_body_x"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=t, y=bax_ma, mode="lines", name="a_body_x (MA)"), row=2, col=1)
 
-    fig.add_trace(go.Scatter(x=t, y=bay,    mode="lines", name="a_body_y"),         row=2, col=2)
-    fig.add_trace(go.Scatter(x=t, y=bay_ma, mode="lines", name="a_body_y (MA)"),    row=2, col=2)
+    fig.add_trace(go.Scatter(x=t, y=bay, mode="lines", name="a_body_y"), row=2, col=2)
+    fig.add_trace(go.Scatter(x=t, y=bay_ma, mode="lines", name="a_body_y (MA)"), row=2, col=2)
 
-    fig.add_trace(go.Scatter(x=t, y=baz,    mode="lines", name="a_body_z"),         row=2, col=3)
-    fig.add_trace(go.Scatter(x=t, y=baz_ma, mode="lines", name="a_body_z (MA)"),    row=2, col=3)
+    fig.add_trace(go.Scatter(x=t, y=baz, mode="lines", name="a_body_z"), row=2, col=3)
+    fig.add_trace(go.Scatter(x=t, y=baz_ma, mode="lines", name="a_body_z (MA)"), row=2, col=3)
 
     # Row 3: orientations
-    fig.add_trace(go.Scatter(x=t, y=yaw,    mode="lines", name="yaw"),              row=3, col=1)
-    fig.add_trace(go.Scatter(x=t, y=yaw_ma, mode="lines", name="yaw (MA)"),         row=3, col=1)
+    fig.add_trace(go.Scatter(x=t, y=yaw, mode="lines", name="yaw"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=t, y=yaw_ma, mode="lines", name="yaw (MA)"), row=3, col=1)
 
-    fig.add_trace(go.Scatter(x=t, y=pitch,  mode="lines", name="pitch"),            row=3, col=2)
-    fig.add_trace(go.Scatter(x=t, y=pitch_ma, mode="lines", name="pitch (MA)"),     row=3, col=2)
+    fig.add_trace(go.Scatter(x=t, y=pitch, mode="lines", name="pitch"), row=3, col=2)
+    fig.add_trace(go.Scatter(x=t, y=pitch_ma, mode="lines", name="pitch (MA)"), row=3, col=2)
 
-    fig.add_trace(go.Scatter(x=t, y=roll,   mode="lines", name="roll"),             row=3, col=3)
-    fig.add_trace(go.Scatter(x=t, y=roll_ma, mode="lines", name="roll (MA)"),       row=3, col=3)
+    fig.add_trace(go.Scatter(x=t, y=roll, mode="lines", name="roll"), row=3, col=3)
+    fig.add_trace(go.Scatter(x=t, y=roll_ma, mode="lines", name="roll (MA)"), row=3, col=3)
 
     fig.update_layout(
         height=1000,
@@ -153,7 +154,7 @@ def plot_with_plotly(t, wax, way, waz, bax, bay, baz, yaw, pitch, roll, title):
 # ---------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--csv", help="CSV to load. If omitted, uses latest in CSV/.")
+    parser.add_argument("--csv", help="CSV to load. If omitted, uses latest in data/CSV/.")
     args = parser.parse_args()
 
     if args.csv:
@@ -161,7 +162,7 @@ def main():
     else:
         csv_path = find_latest_csv()
         if not csv_path:
-            print("No CSV files found in CSV/. Cannot continue.")
+            print("No CSV files found in data/CSV/. Cannot continue.")
             return
         print(f"Using latest CSV: {csv_path}")
 
@@ -175,7 +176,6 @@ def main():
         t, wax, way, waz, bax, bay, baz, yaw, pitch, roll,
         title=f"IMU Accelerations & Orientation ({os.path.basename(csv_path)}), Moving Average K: {MOVING_AVG_WINDOW}"
     )
-
 
 
 if __name__ == "__main__":

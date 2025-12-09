@@ -1,6 +1,6 @@
 import numpy as np
 import pyrealsense2 as rs
-from config import FRAME_W, FRAME_H, FPS
+from src.utils.config import FRAME_W, FRAME_H, FPS
 
 
 class RealSenseInfraredCap:

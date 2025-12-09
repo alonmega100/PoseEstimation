@@ -3,19 +3,17 @@ import threading
 import time
 import logging
 import csv
-import queue
 import numpy as np
 import cv2
-from typing import Dict, Optional
+from typing import Optional
 import os
 import datetime
 import json
 
-from april_tag_processor import AprilTagProcessor
-from imu_reader import IMUReader
-from tools import matrix_to_flat_dict, is_4x4_matrix
-from config import (
-    WORLD_TAG_ID, FRAME_W, FRAME_H,
+from src.vision.april_tag_processor import AprilTagProcessor
+from src.imu.imu_reader import IMUReader
+from src.utils.tools import matrix_to_flat_dict, is_4x4_matrix
+from src.utils.config import (
     OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE,
     CAMERA_SERIALS,
 )
@@ -156,7 +154,7 @@ def run_imu_camera_session(discard: bool = False):
         logging.warning(f"Failed to start IMUReader: {e}")
 
     # make dirs
-    os.makedirs("CSV", exist_ok=True)
+    os.makedirs("../../data/CSV", exist_ok=True)
 
     # run log (in memory)
     run_logs = []
@@ -246,7 +244,7 @@ def run_imu_camera_session(discard: bool = False):
         # -----------------------------
         if not discard:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_filename = f"CSV/session_log_{timestamp}.csv"
+            log_filename = f"data/CSV/session_log_{timestamp}.csv"
 
             rows_to_write = []
             with log_lock:

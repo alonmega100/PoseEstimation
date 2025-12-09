@@ -18,5 +18,5 @@ FPS =30
 ### FILES PARAMETERS ###
 
 DEFAULT_TRANSFORM_PATH = None  # optional global file (for backwards compat)
-DEFAULT_TRANSFORM_DIR = "DATA/hand_eye"
-DEFAULT_CSV_DIR = "CSV"
+DEFAULT_TRANSFORM_DIR = "../../data/DATA/hand_eye"
+DEFAULT_CSV_DIR = "../../data/CSV"

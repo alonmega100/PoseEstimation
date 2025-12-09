@@ -1,7 +1,7 @@
-import numpy as np
-from parso.python.tree import String
-from panda_controller import PandaController, ROBOT_IP
-from concurrent_runner import run_concurrent_system
+from src.robot.panda_controller import PandaController
+from src.utils.concurrent_runner import run_concurrent_system
+from src.utils.config import ROBOT_IP
+
 import time
 
 

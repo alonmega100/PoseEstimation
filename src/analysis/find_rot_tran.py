@@ -2,7 +2,16 @@ import numpy as np
 import pandas as pd
 from os import listdir
 import os
-from tools import rot_geodesic_angle_deg  # for angle stats on rotations
+import sys
+from src.utils.tools import rot_geodesic_angle_deg
+
+# ---------- config ----------
+# Paths relative to project root
+CSV_DIR = "data/CSV"
+SAVE_PATH = "data/DATA/hand_eye/cam_to_robot_transform.npz"
+
+WORLD_TAG_ID = 2.0                 # change if your world tag id differs
+TIME_TOL = pd.Timedelta('30ms')    # cam↔robot pairing tolerance
 
 
 def rpy_to_R_deg(yaw_deg, pitch_deg, roll_deg):
@@ -21,27 +30,36 @@ def rpy_to_R_deg(yaw_deg, pitch_deg, roll_deg):
     Rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
     return Rz @ Ry @ Rx
 
-csv_files = [f for f in listdir("CSV") if f.endswith(".csv")]
+# Check if directory exists
+if not os.path.exists(CSV_DIR):
+    print(f"[ERROR] CSV directory not found at: {os.path.abspath(CSV_DIR)}")
+    sys.exit(1)
+
+csv_files = [f for f in listdir(CSV_DIR) if f.endswith(".csv")]
 sorted_files = sorted(csv_files)
 
-print(sorted_files)
+if not sorted_files:
+    print(f"[ERROR] No .csv files found in {CSV_DIR}")
+    sys.exit(1)
+
+print("Available CSV files:")
+for i, f in enumerate(sorted_files):
+    print(f"  {i}: {f}")
 
 num = input(
     "File to load? 0 for the first and so on...\n"
     " Press Enter for the last one\n :"
 )
 
-if not num:
-    num = -1
+if not num.strip():
+    idx = -1
+else:
+    idx = int(num)
 
-# Load your big CSV
-print("You chose ", sorted_files[int(num)])
-df = pd.read_csv("CSV/" + sorted_files[int(num)])
+chosen_file = sorted_files[idx]
+print("You chose ", chosen_file)
+df = pd.read_csv(os.path.join(CSV_DIR, chosen_file))
 
-# ---------- config ----------
-WORLD_TAG_ID = 2.0                 # change if your world tag id differs
-TIME_TOL = pd.Timedelta('30ms')    # cam↔robot pairing tolerance
-SAVE_PATH = "DATA/hand_eye/cam_to_robot_transform.npz"  # combined RANSAC
 
 # ---------- helpers ----------
 
@@ -262,29 +280,34 @@ fit_one(cam2, "cam2")
 
 
 # --- Combined RANSAC fit using both cams (unchanged) ---
-R, t, stats, inliers = stack_and_fit_ransac(
-    [cam1, cam2],
-    robot,
-    WORLD_TAG_ID,
-    time_tol=TIME_TOL,
-    ransac_thresh=0.01,      # tweak: 0.005–0.02 m typical
-    max_iters=3000,
-    min_inliers_ratio=0.3,
-    random_state=42
-)
+# NOTE: This block might fail if cam1/cam2 don't exist in your specific CSV
+# You might want to wrap this in a try/except or check if they are empty
+if not cam1.empty and not cam2.empty:
+    try:
+        R, t, stats, inliers = stack_and_fit_ransac(
+            [cam1, cam2],
+            robot,
+            WORLD_TAG_ID,
+            time_tol=TIME_TOL,
+            ransac_thresh=0.01,
+            max_iters=3000,
+            min_inliers_ratio=0.3,
+            random_state=42
+        )
 
-print("\n=== RANSAC (cam1+cam2) -> Robot transform ===")
-print("R =\n", R)
-print("t =", t)
-print("stats =", stats)
+        print("\n=== RANSAC (cam1+cam2) -> Robot transform ===")
+        print("R =\n", R)
+        print("t =", t)
+        print("stats =", stats)
 
-# save combined transform (as before)
-try:
-    os.makedirs(os.path.dirname(SAVE_PATH), exist_ok=True)
-    np.savez(SAVE_PATH, R=R, t=t, stats=stats, source="combined")
-    print(f"Saved combined transform to {SAVE_PATH}")
-except Exception as e:
-    print("Skip save combined:", e)
+        # save combined transform (as before)
+        os.makedirs(os.path.dirname(SAVE_PATH), exist_ok=True)
+        np.savez(SAVE_PATH, R=R, t=t, stats=stats, source="combined")
+        print(f"Saved combined transform to {SAVE_PATH}")
+    except Exception as e:
+        print("Skip save combined:", e)
+else:
+    print("\n[INFO] Skipping hardcoded cam1+cam2 combined fit (cameras not found in CSV).")
 
 
 # --- NEW: per-camera RANSAC + save one file per SN ---
@@ -323,7 +346,7 @@ def fit_cam_ransac_and_save(cam_df, robot_df, src, tag_id=WORLD_TAG_ID):
     print("t =", t_cam)
     print("stats =", stats_cam)
 
-    save_path = f"DATA/hand_eye/cam_{src}_to_robot_transform.npz"
+    save_path = f"data/DATA/hand_eye/cam_{src}_to_robot_transform.npz"
     try:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         np.savez(
@@ -343,16 +366,6 @@ def fit_imu_rotation_and_save(imu_df, robot_df, src, tag_for_print="IMU"):
     Estimate a single rotation R_cal such that:
 
         R_robot_i  ≈  R_cal @ R_imu_i
-
-    where:
-      - R_robot_i comes from the robot pose_ij_rob rotation
-      - R_imu_i   comes from imu_yaw_deg / imu_pitch_deg / imu_roll_deg
-
-    We ignore IMU XYZ (integrated position). This is a pure orientation
-    calibration. We still save a dummy t = [0,0,0] for compatibility:
-
-        DATA/hand_eye/imu_<SRC>_to_robot_transform.npz
-        with keys: R (3x3), t (3,), stats (dict), source (str)
     """
     if imu_df.empty:
         print(f"[{tag_for_print} {src}] no rows for this source, skipping.")
@@ -434,15 +447,6 @@ def fit_imu_rotation_and_save(imu_df, robot_df, src, tag_for_print="IMU"):
         "max_deg": max_ang,
     }
 
-    stats = {
-        "N_pairs": int(len(ang_errs)),
-        "mean_deg": mean_ang,
-        "median_deg": median_ang,
-        "p95_deg": p95_ang,
-        "rms_deg": rms_ang,
-        "max_deg": max_ang,
-    }
-
     # Pretty printing
     print("\n" + "=" * 72)
     print(f"=== IMU '{src}' → Robot | Orientation-only Calibration ===")
@@ -459,7 +463,7 @@ def fit_imu_rotation_and_save(imu_df, robot_df, src, tag_for_print="IMU"):
 
 
     # Save R_cal with dummy t=[0,0,0] for compatibility
-    save_path = f"DATA/hand_eye/imu_{src}_to_robot_transform.npz"
+    save_path = f"data/DATA/hand_eye/imu_{src}_to_robot_transform.npz"
     t_dummy = np.zeros(3, dtype=float)
     try:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
