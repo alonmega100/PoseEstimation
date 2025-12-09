@@ -10,7 +10,8 @@ import re
 import os
 import glob
 from pathlib import Path
-from tools import apply_rt_to_camera_points, apply_rt_to_camera_points_per_cam
+# UPDATED: Added moving_average to imports
+from tools import apply_rt_to_camera_points, apply_rt_to_camera_points_per_cam, moving_average
 
 
 # -----------------------------------------------------------
@@ -40,7 +41,7 @@ def _find_cam_transform(src: str, directory: str = "DATA/hand_eye") -> str | Non
 
 
 # -----------------------------------------------------------
-# Parsing helpers (same as before)
+# Parsing helpers
 # -----------------------------------------------------------
 def parse_data_cell(s: str):
     if not s:
@@ -137,13 +138,6 @@ def extract_points(csv_path: str):
 
 
 # -----------------------------------------------------------
-# Transform application
-# -----------------------------------------------------------
-
-
-
-
-# -----------------------------------------------------------
 # Plotting
 # -----------------------------------------------------------
 def build_figure(points: List[Dict[str, Any]],
@@ -232,6 +226,10 @@ def main():
     ap.add_argument("--group-by-tag", action="store_true", default=True)
     ap.add_argument("--robot-lines", action="store_true", default=True)
     ap.add_argument("--camera-lines", action="store_true", default=True)
+    # UPDATED: Argument to control smoothing window
+    ap.add_argument("--imu-smoothing", type=int, default=10,
+                    help="Window size for IMU moving average (default: 10). Set to 1 to disable.")
+
     args = ap.parse_args()
 
     # Auto-select latest CSV
@@ -244,6 +242,32 @@ def main():
     # Load points
     points = extract_points(csv_path)
     print(f"Loaded {len(points)} poses from {Path(csv_path).name}")
+
+    # ---------------------------
+    # UPDATED: IMU Smoothing Logic
+    # ---------------------------
+    if args.imu_smoothing > 1:
+        imu_points = [p for p in points if p["kind"] == "imu"]
+        if imu_points:
+            print(f"Applying moving average (window={args.imu_smoothing}) to {len(imu_points)} IMU points.")
+
+            # Extract raw coordinate lists
+            xs = [p["x"] for p in imu_points]
+            ys = [p["y"] for p in imu_points]
+            zs = [p["z"] for p in imu_points]
+
+            # Compute moving averages (returns NaN for the first window-1 elements)
+            sm_x = moving_average(xs, args.imu_smoothing)
+            sm_y = moving_average(ys, args.imu_smoothing)
+            sm_z = moving_average(zs, args.imu_smoothing)
+
+            # Update the points in-place
+            for i, p in enumerate(imu_points):
+                p["x"] = sm_x[i]
+                p["y"] = sm_y[i]
+                p["z"] = sm_z[i]
+        else:
+            print("No IMU points found to smooth.")
 
     # ---------------------------
     # Transform logic

@@ -6,26 +6,12 @@ import os
 import glob
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from tools import moving_average
+
 
 MOVING_AVG_WINDOW = 200  # number of samples in the moving average window
 
 
-def moving_average(values, window):
-    """Simple trailing moving average. Returns list of same length, NaN until window is full."""
-    if window <= 1:
-        return list(values)
-
-    out = []
-    cumsum = 0.0
-    for i, v in enumerate(values):
-        cumsum += v
-        if i >= window:
-            cumsum -= values[i - window]
-        if i >= window - 1:
-            out.append(cumsum / window)
-        else:
-            out.append(float("nan"))
-    return out
 
 
 # ---------------------------------------------------------------

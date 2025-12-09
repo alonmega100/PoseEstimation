@@ -219,3 +219,23 @@ def apply_rt_to_camera_points_per_cam(points, rt_by_source: Dict[str, Tuple[np.n
         q.update(x=float(v2[0]), y=float(v2[1]), z=float(v2[2]), kind="camera_aligned")
         out.append(q)
     return out
+
+
+def moving_average(values, window):
+    """Simple trailing moving average. Returns list of same length, NaN until window is full."""
+    if window <= 1:
+        return list(values)
+
+    out = []
+    cumsum = 0.0
+    for i, v in enumerate(values):
+        cumsum += v
+        if i >= window:
+            cumsum -= values[i - window]
+        if i >= window - 1:
+            out.append(cumsum / window)
+        else:
+            out.append(float("nan"))
+    return out
+
+
