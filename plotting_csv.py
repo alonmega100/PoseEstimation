@@ -168,7 +168,9 @@ def build_figure(points: List[Dict[str, Any]],
             x=[p["x"] for p in rs], y=[p["y"] for p in rs], z=[p["z"] for p in rs],
             mode="markers+lines" if connect_robot else "markers",
             marker=dict(size=4), line=dict(width=2), name="Robot",
-            hovertemplate="x=%{x:.3f}<br>y=%{y:.3f}<br>z=%{z:.3f}<extra>Robot</extra>"
+            # UPDATED: Pass timestamps to customdata and use them in hovertemplate
+            customdata=[p["timestamp"] for p in rs],
+            hovertemplate="x=%{x:.3f}<br>y=%{y:.3f}<br>z=%{z:.3f}<br>t=%{customdata}<extra>Robot</extra>"
         ))
 
     def add_traces(data, label_suffix: str = "", size: int = 3, offset: int = 0, base_label: str = "Camera"):
@@ -186,6 +188,9 @@ def build_figure(points: List[Dict[str, Any]],
                 marker=dict(size=size, color=color),
                 line=dict(width=2, color=color),
                 name=f"{base_label} {src}{label_suffix}",
+                # UPDATED: Pass timestamps to customdata and use them in hovertemplate
+                customdata=[p["timestamp"] for p in pts],
+                hovertemplate="x=%{x:.3f}<br>y=%{y:.3f}<br>z=%{z:.3f}<br>t=%{customdata}<extra>%{fullData.name}</extra>"
             ))
 
     # Cameras (raw and aligned)
@@ -203,8 +208,6 @@ def build_figure(points: List[Dict[str, Any]],
     )
 
     return fig
-
-
 # -----------------------------------------------------------
 # Main CLI
 # -----------------------------------------------------------
@@ -227,7 +230,7 @@ def main():
     ap.add_argument("--robot-lines", action="store_true", default=True)
     ap.add_argument("--camera-lines", action="store_true", default=True)
     # UPDATED: Argument to control smoothing window
-    ap.add_argument("--imu-smoothing", type=int, default=10,
+    ap.add_argument("--imu-smoothing", type=int, default=1,
                     help="Window size for IMU moving average (default: 10). Set to 1 to disable.")
 
     args = ap.parse_args()
@@ -235,7 +238,7 @@ def main():
     # Auto-select latest CSV
     csv_path = args.csv or _find_latest_csv()
     if not csv_path:
-        print("❌ No CSV found in CSV/. Exiting.")
+        print("No CSV found in CSV/. Exiting.")
         return
     print(f"Using CSV: {csv_path}")
 
