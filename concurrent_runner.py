@@ -532,14 +532,17 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     finally:
         logging.info("Shutting down...")
         stop_event.set()
+        # STEP 1: Wait for robot threads (usually fast)
+        robot_move_t.join(timeout=2.0)
+        robot_log_t.join(timeout=2.0)
 
-        robot_move_t.join(timeout=1.0)
-        robot_log_t.join(timeout=1.0)
         for t in vision_threads:
-            t.join(timeout=1.0)
+            t.join(timeout=5.0)
+
         command_t.join(timeout=1.0)
+
         if imu_t is not None:
-            imu_t.join(timeout=1.0)
+            imu_t.join(timeout=2.0)
         if imu_reader is not None:
             try:
                 imu_reader.stop()
@@ -666,3 +669,6 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                 writer.stop()
             except Exception as e:
                 logging.error(f"Failed to stop HDF5 writer: {e}")
+            # Add this before the end:
+        cv2.destroyAllWindows()
+        cv2.waitKey(1)  # Give OpenCV a moment to process the destroy event
