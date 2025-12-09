@@ -187,7 +187,7 @@ def main():
 
     plot_with_plotly(
         t, wax, way, waz, bax, bay, baz, yaw, pitch, roll,
-        title=f"IMU Accelerations & Orientation ({os.path.basename(csv_path)})"
+        title=f"IMU Accelerations & Orientation ({os.path.basename(csv_path)}), Moving Average K: {MOVING_AVG_WINDOW}"
     )
 
 

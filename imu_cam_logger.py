@@ -300,20 +300,40 @@ def run_imu_camera_session(discard: bool = False):
                         pitch = data.get("pitch_deg")
                         roll = data.get("roll_deg")
 
+                        # NEW: body-frame and world-frame accelerations
+                        acc_body = data.get("acc_body") or (None, None, None)
+                        acc_world = data.get("acc_world_m_s2") or (None, None, None)
+
                         rows_to_write.append({
                             "timestamp": ts,
                             "source": src,
                             "event": ev,
                             "raw_data": json.dumps(data),
+
+                            # position (world)
                             "imu_x": float(pos[0]) if pos and pos[0] is not None else "",
                             "imu_y": float(pos[1]) if pos and pos[1] is not None else "",
                             "imu_z": float(pos[2]) if pos and pos[2] is not None else "",
-                            "imu_yaw_deg": float(yaw) if yaw is not None else "",
+
+                            # orientation
+                            "imu_yaw_deg":   float(yaw)   if yaw   is not None else "",
                             "imu_pitch_deg": float(pitch) if pitch is not None else "",
-                            "imu_roll_deg": float(roll) if roll is not None else "",
+                            "imu_roll_deg":  float(roll)  if roll  is not None else "",
+
+                            # velocity (world)
                             "imu_vx": float(vel[0]) if vel and vel[0] is not None else "",
                             "imu_vy": float(vel[1]) if vel and vel[1] is not None else "",
                             "imu_vz": float(vel[2]) if vel and vel[2] is not None else "",
+
+                            # NEW: accelerations (body frame)
+                            "imu_ax_body": float(acc_body[0]) if acc_body and acc_body[0] is not None else "",
+                            "imu_ay_body": float(acc_body[1]) if acc_body and acc_body[1] is not None else "",
+                            "imu_az_body": float(acc_body[2]) if acc_body and acc_body[2] is not None else "",
+
+                            # NEW: accelerations (world frame, after your processing)
+                            "imu_ax_world": float(acc_world[0]) if acc_world and acc_world[0] is not None else "",
+                            "imu_ay_world": float(acc_world[1]) if acc_world and acc_world[1] is not None else "",
+                            "imu_az_world": float(acc_world[2]) if acc_world and acc_world[2] is not None else "",
                         })
                         continue
 
@@ -331,11 +351,16 @@ def run_imu_camera_session(discard: bool = False):
                     })
 
             # add imu flat columns for easier analysis
+            # add imu flat columns for easier analysis
             IMU_COLS = [
                 "imu_x", "imu_y", "imu_z",
                 "imu_yaw_deg", "imu_pitch_deg", "imu_roll_deg",
                 "imu_vx", "imu_vy", "imu_vz",
+                # NEW accel columns:
+                "imu_ax_body", "imu_ay_body", "imu_az_body",
+                "imu_ax_world", "imu_ay_world", "imu_az_world",
             ]
+
             fieldnames = ["timestamp", "source", "event", "tag_id", "raw_data"] + IMU_COLS + POSE_COLS
             try:
                 with open(log_filename, "w", newline="") as f:

@@ -1,5 +1,6 @@
 import numpy as np
-from typing import Optional, Tuple
+
+from typing import Dict, Tuple, Optional
 
 
 def to_H(R, t):
@@ -176,3 +177,45 @@ def parse_vn_vnrrg_08(line: str) -> Optional[Tuple[float, ...]]:
         return yaw, pitch, roll
     except Exception:
         return None
+
+
+def apply_rt_to_camera_points(points, R, t):
+    """
+    Legacy helper: apply a single R,t transform to all camera points.
+    """
+    out = []
+    R = np.asarray(R, dtype=float)
+    t = np.asarray(t, dtype=float).reshape(3)
+    for p in points:
+        if p["kind"] != "camera":
+            continue
+        v = np.array([p["x"], p["y"], p["z"]], dtype=float)
+        v2 = R @ v + t
+        q = dict(p)
+        q.update(x=float(v2[0]), y=float(v2[1]), z=float(v2[2]), kind="camera_aligned")
+        out.append(q)
+    return out
+
+
+def apply_rt_to_camera_points_per_cam(points, rt_by_source: Dict[str, Tuple[np.ndarray, np.ndarray]]):
+    """
+    New helper: apply a different R,t per camera source.
+    rt_by_source: dict[source] = (R, t)
+    """
+    out = []
+    for p in points:
+        if p["kind"] != "camera":
+            continue
+        src = p.get("source", "")
+        if src not in rt_by_source:
+            # No transform for this camera; skip it (it will remain in raw form)
+            continue
+        R, t = rt_by_source[src]
+        R = np.asarray(R, dtype=float)
+        t = np.asarray(t, dtype=float).reshape(3)
+        v = np.array([p["x"], p["y"], p["z"]], dtype=float)
+        v2 = R @ v + t
+        q = dict(p)
+        q.update(x=float(v2[0]), y=float(v2[1]), z=float(v2[2]), kind="camera_aligned")
+        out.append(q)
+    return out
