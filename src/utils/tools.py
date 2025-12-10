@@ -1,6 +1,6 @@
 import numpy as np
 
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Any
 
 
 def to_H(R, t):
@@ -67,6 +67,21 @@ def is_4x4_matrix(obj):
             len(obj) == 4 and
             all(isinstance(row, (list, tuple)) and len(row) == 4 for row in obj)
     )
+
+
+def pose_row_to_matrix(row: Any, prefix: str = "pose_") -> np.ndarray:
+    """
+    Construct a 4x4 matrix from a dictionary-like row (e.g. pandas Series)
+    containing keys '{prefix}00' through '{prefix}33'.
+    """
+    H = np.eye(4, dtype=float)
+    for r in range(4):
+        for c in range(4):
+            key = f"{prefix}{r}{c}"
+            # We assume the key exists or let it raise KeyError,
+            # but usually row is a Series/dict from the CSV.
+            H[r, c] = float(row[key])
+    return H
 
 
 def matrix_to_flat_dict(prefix, mat):
@@ -237,5 +252,3 @@ def moving_average(values, window):
         else:
             out.append(float("nan"))
     return out
-
-

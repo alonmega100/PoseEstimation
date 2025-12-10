@@ -17,7 +17,7 @@ import os
 from typing import Dict, List, Optional
 
 # We assume these tools exist in your utils; if not, you might need to adjust imports
-from src.utils.tools import H_to_xyzrpy_ZYX, rot_geodesic_angle_deg
+from src.utils.tools import H_to_xyzrpy_ZYX, rot_geodesic_angle_deg, pose_row_to_matrix
 
 # ---------------------------------------------------------------------
 # CONFIG: Paths relative to project root
@@ -28,6 +28,7 @@ DEFAULT_TRANSFORM_DIR = "data/DATA/hand_eye"
 DEFAULT_TRANSFORM_PATH = "data/DATA/hand_eye/cam_to_robot_transform.npz"
 
 MM = 1000.0  # (meters -> millimeters)
+POSE_PREFIX = "pose_"
 
 
 # ---------------------------------------------------------------------
@@ -197,17 +198,6 @@ def load_imu_to_robot_transform(
 # ---------------------------------------------------------------------
 # Pose helpers
 # ---------------------------------------------------------------------
-POSE_PREFIX = "pose_"
-
-
-def pose_row_to_matrix(row: pd.Series, prefix: str = POSE_PREFIX) -> np.ndarray:
-    T = np.eye(4, dtype=float)
-    for r in range(4):
-        for c in range(4):
-            key = f"{prefix}{r}{c}"
-            T[r, c] = float(row[key])
-    return T
-
 
 def add_camera_base_columns(df_cam: pd.DataFrame, cam_id: str, T_cam_to_robot: Dict[str, np.ndarray]) -> pd.DataFrame:
     if cam_id not in T_cam_to_robot:
@@ -217,7 +207,7 @@ def add_camera_base_columns(df_cam: pd.DataFrame, cam_id: str, T_cam_to_robot: D
 
     xs, ys, zs = [], [], []
     for _, row in df_cam.iterrows():
-        T_cam_tag = pose_row_to_matrix(row)
+        T_cam_tag = pose_row_to_matrix(row, prefix=POSE_PREFIX)
         T_base_tag = T_base_cam @ T_cam_tag
         p = T_base_tag[:3, 3]
         xs.append(p[0])
@@ -234,7 +224,7 @@ def add_camera_base_columns(df_cam: pd.DataFrame, cam_id: str, T_cam_to_robot: D
 def add_robot_base_columns(df_robot: pd.DataFrame) -> pd.DataFrame:
     xs, ys, zs = [], [], []
     for _, row in df_robot.iterrows():
-        T_base_robot = pose_row_to_matrix(row)
+        T_base_robot = pose_row_to_matrix(row, prefix=POSE_PREFIX)
         p = T_base_robot[:3, 3]
         xs.append(p[0])
         ys.append(p[1])
@@ -273,6 +263,7 @@ def analyze_camera_pair(
         print(f"[WARN] No data for camera pair ({cam_a}, {cam_b}) in this CSV.")
         return
 
+    # Add transformed columns (Base frame)
     df_a = add_camera_base_columns(df_a, cam_a, T_cam_to_robot)
     df_b = add_camera_base_columns(df_b, cam_b, T_cam_to_robot)
 
@@ -288,6 +279,7 @@ def analyze_camera_pair(
         return
 
     all_errors = []
+    raw_errors = []  # Store raw position diffs
 
     for tag_id in common_tags:
         sub_a = df_a[df_a[tag_col] == tag_id].copy()
@@ -313,39 +305,67 @@ def analyze_camera_pair(
         if merged.empty:
             continue
 
+        # --- Aligned Error ---
         pts_a = merged[["x_base_a", "y_base_a", "z_base_a"]].to_numpy()
         pts_b = merged[["x_base_b", "y_base_b", "z_base_b"]].to_numpy()
-
         diffs = pts_a - pts_b
         dists = np.linalg.norm(diffs, axis=1)  # meters
         all_errors.append(dists)
+
+        # --- Raw Error (Before Transform) ---
+        # Raw translation columns: pose_03, pose_13, pose_23
+        # In merged df, they become pose_03_a, etc.
+        rx_a = merged[f"{POSE_PREFIX}03_a"]
+        ry_a = merged[f"{POSE_PREFIX}13_a"]
+        rz_a = merged[f"{POSE_PREFIX}23_a"]
+        rx_b = merged[f"{POSE_PREFIX}03_b"]
+        ry_b = merged[f"{POSE_PREFIX}13_b"]
+        rz_b = merged[f"{POSE_PREFIX}23_b"]
+
+        raw_pts_a = np.vstack([rx_a, ry_a, rz_a]).T
+        raw_pts_b = np.vstack([rx_b, ry_b, rz_b]).T
+        raw_diffs = raw_pts_a - raw_pts_b
+        raw_dists = np.linalg.norm(raw_diffs, axis=1)
+        raw_errors.append(raw_dists)
 
     if not all_errors:
         print(f"[WARN] No aligned samples for cameras {cam_a} and {cam_b}.")
         return
 
     all_errors = np.concatenate(all_errors)
-    mse = float(np.mean(all_errors ** 2))
-    rmse = float(np.sqrt(mse))
-    mean_err = float(np.mean(all_errors))
-    median_err = float(np.median(all_errors))
-    p95 = float(np.percentile(all_errors, 95))
+    raw_errors = np.concatenate(raw_errors)
 
-    mse_mm2 = mse * (MM ** 2)
-    rmse_mm = rmse * MM
-    mean_err_mm = mean_err * MM
-    median_err_mm = median_err * MM
-    p95_mm = p95 * MM
+    # --- Stats Helpers ---
+    def print_stats(errors_m, prefix=""):
+        mse = float(np.mean(errors_m ** 2))
+        rmse = float(np.sqrt(mse))
+        mean_err = float(np.mean(errors_m))
+        median_err = float(np.median(errors_m))
+        p95 = float(np.percentile(errors_m, 95))
 
+        mse_mm2 = mse * (MM ** 2)
+        rmse_mm = rmse * MM
+        mean_err_mm = mean_err * MM
+        median_err_mm = median_err * MM
+        p95_mm = p95 * MM
+
+        print(f"{prefix}Aligned samples : {len(errors_m)}")
+        print(f"{prefix}Mean |Δp|       : {mean_err_mm:.2f} mm")
+        print(f"{prefix}Median |Δp|     : {median_err_mm:.2f} mm")
+        print(f"{prefix}95th percentile : {p95_mm:.2f} mm")
+        print(f"{prefix}MSE             : {mse_mm2:.2f} mm^2")
+        print(f"{prefix}RMSE            : {rmse_mm:.2f} mm")
+
+    # --- Print Raw Stats (Before Transform) ---
+    print(f"\n=== Raw Camera Pair (No Transform): {cam_a} vs {cam_b} ===")
+    print("(Distance between sensors in their respective raw coordinates)")
+    print_stats(raw_errors)
+
+    # --- Print Aligned Stats (After Transform) ---
     print(f"\n=== Camera pair: {cam_a} vs {cam_b} ===")
     if tag_id_filter is not None:
         print(f"Tag filter: {tag_id_filter}")
-    print(f"Aligned samples : {len(all_errors)}")
-    print(f"Mean |Δp|       : {mean_err_mm:.2f} mm")
-    print(f"Median |Δp|     : {median_err_mm:.2f} mm")
-    print(f"95th percentile : {p95_mm:.2f} mm")
-    print(f"MSE             : {mse_mm2:.2f} mm^2")
-    print(f"RMSE            : {rmse_mm:.2f} mm")
+    print_stats(all_errors)
 
 
 def analyze_camera_vs_robot(
@@ -467,11 +487,11 @@ def analyze_imu_vs_robot(
         return
 
     robot_sel = robot_sel.copy()
-    robot_sel["x_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row)[0, 3], axis=1)
-    robot_sel["y_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row)[1, 3], axis=1)
-    robot_sel["z_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row)[2, 3], axis=1)
+    robot_sel["x_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row, prefix=POSE_PREFIX)[0, 3], axis=1)
+    robot_sel["y_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row, prefix=POSE_PREFIX)[1, 3], axis=1)
+    robot_sel["z_base"] = robot_sel.apply(lambda row: pose_row_to_matrix(row, prefix=POSE_PREFIX)[2, 3], axis=1)
     robot_sel[["r_roll", "r_pitch", "r_yaw"]] = robot_sel.apply(
-        lambda row: pd.Series(np.degrees(H_to_xyzrpy_ZYX(pose_row_to_matrix(row))[3:6])), axis=1
+        lambda row: pd.Series(np.degrees(H_to_xyzrpy_ZYX(pose_row_to_matrix(row, prefix=POSE_PREFIX))[3:6])), axis=1
     )
 
     imu_sorted = imu_sel.sort_values(time_col)
@@ -545,7 +565,7 @@ def analyze_imu_vs_robot(
     geo_angles = []
     for _, row in merged.iterrows():
         try:
-            R_robot = pose_row_to_matrix(row)[:3, :3]
+            R_robot = pose_row_to_matrix(row, prefix=POSE_PREFIX)[:3, :3]
             R_imu_raw = rpy_to_R_deg(
                 row.get("imu_yaw_deg"),
                 row.get("imu_pitch_deg"),
