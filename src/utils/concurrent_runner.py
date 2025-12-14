@@ -331,6 +331,11 @@ def imu_thread(
     we take the latest object-tag pose from `shared_state["tag_pose_A"]`
     and set the IMU position to that translation.
     """
+    # Defensive check: if imu_reader is None, exit gracefully
+    if imu_reader is None:
+        logging.warning("IMU thread: imu_reader is None, exiting immediately")
+        return
+    
     logging.info("IMU thread started")
     backoff = 0.01
     last_correction_wall = time.time()
@@ -490,15 +495,16 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     # start all
     robot_move_t.start()
     robot_log_t.start()
-    # IMU thread
-    imu_t = threading.Thread(
-        target=imu_thread,
-        name="IMU",
-        args=(stop_event, log_event, discard, imu_reader, IMU_CORRECTION_INTERVAL),
-        daemon=True,
-    )
-
-    imu_t.start()
+    # IMU thread (only if imu_reader was successfully initialized)
+    if imu_reader is not None:
+        imu_t = threading.Thread(
+            target=imu_thread,
+            name="IMU",
+            args=(stop_event, log_event, discard, imu_reader, IMU_CORRECTION_INTERVAL),
+            daemon=True,
+        )
+        imu_t.start()
+    
     for t in vision_threads:
         t.start()
     command_t.start()
@@ -670,6 +676,10 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                 writer.stop()
             except Exception as e:
                 logging.error(f"Failed to stop HDF5 writer: {e}")
-            # Add this before the end:
-        cv2.destroyAllWindows()
-        cv2.waitKey(1)  # Give OpenCV a moment to process the destroy event
+        
+        # Clean up OpenCV windows safely
+        try:
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)  # Give OpenCV a moment to process the destroy event
+        except Exception as e:
+            logging.warning(f"OpenCV cleanup failed (non-fatal): {e}")
