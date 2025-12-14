@@ -20,14 +20,24 @@ class RealSenseInfraredCap:
 
         self.profile = self.pipe.start(self.cfg)
 
-        # 2. DISABLE LASER EMITTER (Crucial for AprilTags)
+        # 2. ENABLE HARDWARE-BASED DISTORTION CORRECTION
+        # RealSense handles undistortion internally with specialized hardware
         device = self.profile.get_device()
+        
+        # Get IR sensor for configuration
+        ir_sensor = None
+        for sensor in device.query_sensors():
+            if sensor.get_info(rs.camera_info.name) == "Stereo Module":
+                ir_sensor = sensor
+                break
+
+        # 3. DISABLE LASER EMITTER (Crucial for AprilTags)
         depth_sensor = device.first_depth_sensor()
 
         if depth_sensor.supports(rs.option.emitter_enabled):
             depth_sensor.set_option(rs.option.emitter_enabled, 0.0)  # 0 = Off
 
-        # 3. MANUAL EXPOSURE & GAIN
+        # 4. MANUAL EXPOSURE & GAIN
         if depth_sensor.supports(rs.option.enable_auto_exposure):
             depth_sensor.set_option(rs.option.enable_auto_exposure, 0)
 
@@ -38,7 +48,7 @@ class RealSenseInfraredCap:
         if depth_sensor.supports(rs.option.gain):
             depth_sensor.set_option(rs.option.gain, 200.0)
 
-        # 4. Get intrinsics
+        # 5. Get intrinsics (for reference, but RealSense handles undistortion internally)
         vsp = rs.video_stream_profile(self.profile.get_stream(rs.stream.infrared, 1))
         intr = vsp.get_intrinsics()
         self.K = np.array([[intr.fx, 0, intr.ppx],

@@ -21,12 +21,8 @@ class AprilTagProcessor:
         self.OBJ_TAG_IDS = obj_tag_ids
         self.cap = RealSenseInfraredCap(serial, w, h, fps)
 
-        self.newK, _ = cv2.getOptimalNewCameraMatrix(
-            self.cap.K, self.cap.D, (w, h), 1.0
-        )
-        self.map1, self.map2 = cv2.initUndistortRectifyMap(
-            self.cap.K, self.cap.D, None, self.newK, (w, h), cv2.CV_16SC2
-        )
+        # NOTE: RealSense handles distortion internally, so we use camera intrinsics for reference only
+        # The frames returned from cap.read() are already undistorted by RealSense hardware
 
         # Initialize detector once
         self.detector = Detector(
@@ -83,15 +79,14 @@ class AprilTagProcessor:
         if not ok or frame is None:
             return np.zeros((FRAME_H, FRAME_W, 3), np.uint8), {}
 
-        # --- Fast Undistortion ---
-        # 1. Use the PRE-CALCULATED maps (much faster than repeated calls)
-        undist = cv2.remap(frame, self.map1, self.map2, cv2.INTER_LINEAR)
+        # NOTE: Frame is already undistorted by RealSense hardware, no need for cv2.remap()
+        undist = frame
 
-        # 2. Convert to BGR only for visualization
+        # Convert to BGR only for visualization
         vis = cv2.cvtColor(undist, cv2.COLOR_GRAY2BGR)
 
-        # 3. Use the PRE-CALCULATED camera matrix (self.newK)
-        campar = (self.newK[0, 0], self.newK[1, 1], self.newK[0, 2], self.newK[1, 2])
+        # Use the original camera matrix (RealSense intrinsics)
+        campar = (self.cap.K[0, 0], self.cap.K[1, 1], self.cap.K[0, 2], self.cap.K[1, 2])
 
         # --- Detection ---
         world_map = self._detect_tags(undist, campar, self.WORLD_TAG_SIZE, {WORLD_TAG_ID})
@@ -107,7 +102,7 @@ class AprilTagProcessor:
         for tid, (H, rvec, tvec, corners, size_used) in H_c_by_id.items():
             for k in range(4):
                 cv2.line(vis, tuple(corners[k]), tuple(corners[(k + 1) % 4]), (0, 255, 255), 2)
-            self._draw_axes(vis, self.newK, rvec, tvec, 0.5 * size_used)
+            self._draw_axes(vis, self.cap.K, rvec, tvec, 0.5 * size_used)
 
             if world_tag_visible and tid in self.OBJ_TAG_IDS:
                 H_0c = inv_H(H_c_by_id[WORLD_TAG_ID][0])

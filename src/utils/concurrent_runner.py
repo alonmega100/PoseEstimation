@@ -68,7 +68,6 @@ def command_writer_thread(
     # list_of_movements = ['y 0.2 z -0.1', 'x 0.1 y -0.2', 'y 0.2', 'x -0.1', 'x 0.1', 'y -0.2', 'x -0.1', 'x 0.1', 'y 0.2', 'y -0.1', 'x -0.2', 'y -0.1', 'y 0.2', 'x 0.1 y -0.2', 'x 0.1 y 0.1', 'z 0.1', 'y 0.1 z -0.1', 'y -0.1 z 0.1', 'x -0.1', 'x -0.1 y -0.1']
     ######   ######
     print(list_of_movements)
-    # list_of_movements = ["yaw 30 -z 0.05", "y 0.1 x 0.1"]
     while not stop_event.is_set():
         try:
             print("Type command (q=quit): ")
@@ -517,15 +516,24 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
             # show combined camera view
             with state_lock:
                 images = [shared_state["vision_image"].get(sn) for sn in CAMERA_SERIALS]
-            images = [img for img in images if img is not None]
-            if images:
-                max_h = max(img.shape[0] for img in images)
-                padded = [
-                    cv2.copyMakeBorder(
-                        img, 0, max_h - img.shape[0], 0, 0,
+            # Pair images with their serial numbers
+            image_serial_pairs = [(img, sn) for img, sn in zip(images, CAMERA_SERIALS) if img is not None]
+            if image_serial_pairs:
+                max_h = max(img.shape[0] for img, _ in image_serial_pairs)
+                padded = []
+                for img, sn in image_serial_pairs:
+                    # Add serial number text overlay
+                    img_copy = img.copy()
+                    cv2.putText(
+                        img_copy, f"SN: {sn}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
+                    )
+                    # Pad to max height
+                    padded_img = cv2.copyMakeBorder(
+                        img_copy, 0, max_h - img_copy.shape[0], 0, 0,
                         cv2.BORDER_CONSTANT, value=(0, 0, 0)
-                    ) for img in images
-                ]
+                    )
+                    padded.append(padded_img)
                 mosaic = cv2.hconcat(padded)
                 cv2.imshow(WIN, mosaic)
 
