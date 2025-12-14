@@ -10,7 +10,9 @@ data/CSV/*.html
 
 # Ignore all calibration data inside data/DATA
 data/DATA/**/*.npz
+data/DATA/**
+!data/DATA/
+!data/DATA/**/.gitkeep
 
 # Explicitly track the .gitkeep files to preserve folder structure
 !data/CSV/.gitkeep
-!data/DATA/hand_eye/.gitkeep
