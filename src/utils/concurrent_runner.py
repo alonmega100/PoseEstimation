@@ -65,7 +65,7 @@ def command_writer_thread(
     logging.info("Command writer started")
     list_of_movements = list_of_movements_generator(NUM_OF_COMMANDS_TO_GENERATE)
     ###### Using the following line to override the command queue to get a reapeating experiment  ######
-    list_of_movements = ['y 0.2 z -0.1', 'x 0.1 y -0.2', 'y 0.2', 'x -0.1', 'x 0.1', 'y -0.2', 'x -0.1', 'x 0.1', 'y 0.2', 'y -0.1', 'x -0.2', 'y -0.1', 'y 0.2', 'x 0.1 y -0.2', 'x 0.1 y 0.1', 'z 0.1', 'y 0.1 z -0.1', 'y -0.1 z 0.1', 'x -0.1', 'x -0.1 y -0.1']
+    # list_of_movements = ['y 0.2 z -0.1', 'x 0.1 y -0.2', 'y 0.2', 'x -0.1', 'x 0.1', 'y -0.2', 'x -0.1', 'x 0.1', 'y 0.2', 'y -0.1', 'x -0.2', 'y -0.1', 'y 0.2', 'x 0.1 y -0.2', 'x 0.1 y 0.1', 'z 0.1', 'y 0.1 z -0.1', 'y -0.1 z 0.1', 'x -0.1', 'x -0.1 y -0.1']
     ######   ######
     print(list_of_movements)
     # list_of_movements = ["yaw 30 -z 0.05", "y 0.1 x 0.1"]
