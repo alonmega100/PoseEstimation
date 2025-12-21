@@ -6,7 +6,7 @@ import os
 import glob
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from src.utils.tools import moving_average, H_to_xyzrpy_ZYX, pose_row_to_matrix
+from src.utils.tools import moving_average, H_to_xyzrpy_ZYX, pose_row_to_matrix, find_latest_csv
 import numpy as np
 import pandas as pd
 
@@ -16,17 +16,7 @@ MOVING_AVG_WINDOW = 200  # number of samples in the moving average window
 # ---------------------------------------------------------------
 # Find latest CSV in ./data/CSV/
 # ---------------------------------------------------------------
-def find_latest_csv():
-    # Looking in data/CSV relative to project root
-    search_path = "data/CSV"
-    if not os.path.exists(search_path):
-        return None
 
-    csvs = glob.glob(os.path.join(search_path, "*.csv"))
-    if not csvs:
-        return None
-    csvs.sort(key=lambda p: os.path.getmtime(p))
-    return csvs[-1]
 
 
 # ---------------------------------------------------------------
@@ -120,18 +110,18 @@ def load_robot_pose_from_csv(csv_path):
         H = pose_row_to_matrix(row, prefix=POSE_PREFIX)
         xyzrpy = H_to_xyzrpy_ZYX(H)
         # Returns [x, y, z, roll, pitch, yaw]
-        roll, pitch, yaw = xyzrpy[3], xyzrpy[4], xyzrpy[5]
-        return np.degrees(np.array([yaw, pitch, roll]))
+        # xyzrpy[3:6] gives [roll, pitch, yaw]
+        return np.degrees(xyzrpy[3:6])
     
     df_robot["rpy"] = df_robot.apply(extract_rpy, axis=1)
     
     t_robot = df_robot[time_col].tolist()
     rpy_list = df_robot["rpy"].tolist()
     
-    # Unpack RPY
-    yaw_robot = [rpy[0] for rpy in rpy_list]
+    # Unpack RPY (rpy_list contains [roll, pitch, yaw] for each row)
+    roll_robot = [rpy[0] for rpy in rpy_list]
     pitch_robot = [rpy[1] for rpy in rpy_list]
-    roll_robot = [rpy[2] for rpy in rpy_list]
+    yaw_robot = [rpy[2] for rpy in rpy_list]
     
     return t_robot, yaw_robot, pitch_robot, roll_robot
 

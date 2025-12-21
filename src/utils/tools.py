@@ -285,3 +285,28 @@ def choose_csv_interactively(csv_dir: str) -> str:
     chosen = files[idx]
     print("You chose", chosen)
     return os.path.join(csv_dir, chosen)
+
+
+def find_latest_csv():
+    # Looking in data/CSV relative to project root
+    search_path = "data/CSV"
+    if not os.path.exists(search_path):
+        return None
+
+    csvs = glob.glob(os.path.join(search_path, "*.csv"))
+    if not csvs:
+        return None
+    csvs.sort(key=lambda p: os.path.getmtime(p))
+    return csvs[-1]
+
+def rpy_to_R_deg(yaw_deg, pitch_deg, roll_deg):
+    y = np.radians(yaw_deg)
+    p = np.radians(pitch_deg)
+    r = np.radians(roll_deg)
+    cy, sy = np.cos(y), np.sin(y)
+    cp, sp = np.cos(p), np.sin(p)
+    cr, sr = np.cos(r), np.sin(r)
+    Rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
+    Ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
+    Rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
+    return Rz @ Ry @ Rx

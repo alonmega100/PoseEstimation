@@ -17,7 +17,7 @@ import os
 from typing import Dict, List, Optional
 
 # We assume these tools exist in your utils; if not, you might need to adjust imports
-from src.utils.tools import H_to_xyzrpy_ZYX, rot_geodesic_angle_deg, pose_row_to_matrix, choose_csv_interactively
+from src.utils.tools import H_to_xyzrpy_ZYX, rot_geodesic_angle_deg, pose_row_to_matrix, choose_csv_interactively, rpy_to_R_deg
 
 # ---------------------------------------------------------------------
 # CONFIG: Paths relative to project root
@@ -550,17 +550,6 @@ def analyze_imu_vs_robot(
     print(f"RMSE            : {rmse_pos_mm:.2f} mm")
 
     # --- Geodesic rotation error (deg) ---
-    def rpy_to_R_deg(yaw_deg, pitch_deg, roll_deg):
-        y = np.radians(yaw_deg)
-        p = np.radians(pitch_deg)
-        r = np.radians(roll_deg)
-        cy, sy = np.cos(y), np.sin(y)
-        cp, sp = np.cos(p), np.sin(p)
-        cr, sr = np.cos(r), np.sin(r)
-        Rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
-        Ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
-        Rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
-        return Rz @ Ry @ Rx
 
     geo_angles = []
     for _, row in merged.iterrows():
@@ -598,12 +587,6 @@ def analyze_imu_vs_robot(
         print(f"95th percentile : {p95_g:.3f}°")
         print(f"RMS error       : {rmse_g:.3f}°")
         print("=" * 72)
-
-
-# ---------------------------------------------------------------------
-# CSV selection
-# ---------------------------------------------------------------------
-
 
 # ---------------------------------------------------------------------
 # Main
