@@ -6,7 +6,9 @@ import os
 import glob
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from src.utils.tools import moving_average
+from src.utils.tools import moving_average, H_to_xyzrpy_ZYX, pose_row_to_matrix
+import numpy as np
+import pandas as pd
 
 MOVING_AVG_WINDOW = 200  # number of samples in the moving average window
 
@@ -78,13 +80,76 @@ def load_imu_from_csv(csv_path):
 
 
 # ---------------------------------------------------------------
+# Load robot pose rows (for comparison)
+# ---------------------------------------------------------------
+def load_robot_pose_from_csv(csv_path):
+    """Extract robot RPY angles from pose matrices in CSV using pandas."""
+    POSE_PREFIX = "pose_"
+    
+    # Read CSV with pandas
+    df = pd.read_csv(csv_path)
+    
+    # Filter for robot rows
+    df_robot = df[df["source"] == "robot"].copy()
+    
+    if df_robot.empty:
+        return [], [], [], []
+    
+    # Select time and pose columns (use 'timestamp' for time)
+    time_col = "timestamp"
+    pose_cols = [f"{POSE_PREFIX}{r}{c}" for r in range(4) for c in range(4)]
+    
+    # Check if time column exists
+    if time_col not in df_robot.columns:
+        return [], [], [], []
+    
+    # Check if all pose columns exist
+    if not all(col in df_robot.columns for col in pose_cols):
+        return [], [], [], []
+    
+    df_robot = df_robot[[time_col] + pose_cols].dropna()
+    
+    if df_robot.empty:
+        return [], [], [], []
+    
+    # Convert timestamp to seconds (parse ISO format and get seconds since epoch)
+    df_robot[time_col] = pd.to_datetime(df_robot[time_col]).astype(int) / 1e9
+    
+    # Extract RPY from pose matrices
+    def extract_rpy(row):
+        H = pose_row_to_matrix(row, prefix=POSE_PREFIX)
+        xyzrpy = H_to_xyzrpy_ZYX(H)
+        # Returns [x, y, z, roll, pitch, yaw]
+        roll, pitch, yaw = xyzrpy[3], xyzrpy[4], xyzrpy[5]
+        return np.degrees(np.array([yaw, pitch, roll]))
+    
+    df_robot["rpy"] = df_robot.apply(extract_rpy, axis=1)
+    
+    t_robot = df_robot[time_col].tolist()
+    rpy_list = df_robot["rpy"].tolist()
+    
+    # Unpack RPY
+    yaw_robot = [rpy[0] for rpy in rpy_list]
+    pitch_robot = [rpy[1] for rpy in rpy_list]
+    roll_robot = [rpy[2] for rpy in rpy_list]
+    
+    return t_robot, yaw_robot, pitch_robot, roll_robot
+
+
+# ---------------------------------------------------------------
 # Plot using Plotly
 # ---------------------------------------------------------------
-def plot_with_plotly(t, wax, way, waz, bax, bay, baz, yaw, pitch, roll, title):
+def plot_with_plotly(t, wax, way, waz, bax, bay, baz, yaw, pitch, roll, 
+                     t_robot=None, yaw_robot=None, pitch_robot=None, roll_robot=None, title=""):
+    """Plot IMU and optionally robot orientation data."""
     # Make time start at zero
     if t:
         t0 = t[0]
         t = [ti - t0 for ti in t]
+    
+    if t_robot:
+        t0_robot = t_robot[0]
+        t_robot = [ti - t0_robot for ti in t_robot]
 
     # Pre-compute moving averages
     wax_ma = moving_average(wax, MOVING_AVG_WINDOW)
@@ -130,14 +195,23 @@ def plot_with_plotly(t, wax, way, waz, bax, bay, baz, yaw, pitch, roll, title):
     fig.add_trace(go.Scatter(x=t, y=baz_ma, mode="lines", name="a_body_z (MA)"), row=2, col=3)
 
     # Row 3: orientations
-    fig.add_trace(go.Scatter(x=t, y=yaw, mode="lines", name="yaw"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=t, y=yaw_ma, mode="lines", name="yaw (MA)"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=t, y=yaw, mode="lines", name="yaw (IMU)", line=dict(color="blue")), row=3, col=1)
+    fig.add_trace(go.Scatter(x=t, y=yaw_ma, mode="lines", name="yaw (IMU MA)", line=dict(color="lightblue")), row=3, col=1)
+    
+    if t_robot and yaw_robot:
+        fig.add_trace(go.Scatter(x=t_robot, y=yaw_robot, mode="lines", name="yaw (Robot)", line=dict(color="red", dash="dash")), row=3, col=1)
 
-    fig.add_trace(go.Scatter(x=t, y=pitch, mode="lines", name="pitch"), row=3, col=2)
-    fig.add_trace(go.Scatter(x=t, y=pitch_ma, mode="lines", name="pitch (MA)"), row=3, col=2)
+    fig.add_trace(go.Scatter(x=t, y=pitch, mode="lines", name="pitch (IMU)", line=dict(color="blue")), row=3, col=2)
+    fig.add_trace(go.Scatter(x=t, y=pitch_ma, mode="lines", name="pitch (IMU MA)", line=dict(color="lightblue")), row=3, col=2)
+    
+    if t_robot and pitch_robot:
+        fig.add_trace(go.Scatter(x=t_robot, y=pitch_robot, mode="lines", name="pitch (Robot)", line=dict(color="red", dash="dash")), row=3, col=2)
 
-    fig.add_trace(go.Scatter(x=t, y=roll, mode="lines", name="roll"), row=3, col=3)
-    fig.add_trace(go.Scatter(x=t, y=roll_ma, mode="lines", name="roll (MA)"), row=3, col=3)
+    fig.add_trace(go.Scatter(x=t, y=roll, mode="lines", name="roll (IMU)", line=dict(color="blue")), row=3, col=3)
+    fig.add_trace(go.Scatter(x=t, y=roll_ma, mode="lines", name="roll (IMU MA)", line=dict(color="lightblue")), row=3, col=3)
+    
+    if t_robot and roll_robot:
+        fig.add_trace(go.Scatter(x=t_robot, y=roll_robot, mode="lines", name="roll (Robot)", line=dict(color="red", dash="dash")), row=3, col=3)
 
     fig.update_layout(
         height=1000,
@@ -172,9 +246,19 @@ def main():
         print("No IMU rows found in CSV.")
         return
 
+    # Try to load robot pose data for comparison
+    t_robot, yaw_robot, pitch_robot, roll_robot = load_robot_pose_from_csv(csv_path)
+    
+    if t_robot:
+        print(f"Loaded {len(t_robot)} robot pose samples")
+    else:
+        print("No robot pose data found (or no pose matrices in CSV)")
+        t_robot = yaw_robot = pitch_robot = roll_robot = None
+
     plot_with_plotly(
         t, wax, way, waz, bax, bay, baz, yaw, pitch, roll,
-        title=f"IMU Accelerations & Orientation ({os.path.basename(csv_path)}), Moving Average K: {MOVING_AVG_WINDOW}"
+        t_robot=t_robot, yaw_robot=yaw_robot, pitch_robot=pitch_robot, roll_robot=roll_robot,
+        title=f"IMU & Robot Orientation ({os.path.basename(csv_path)}), Moving Average K: {MOVING_AVG_WINDOW}"
     )
 
 
