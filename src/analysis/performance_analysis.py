@@ -12,12 +12,12 @@ For each CSV, we can:
 import numpy as np
 import pandas as pd
 import argparse
-import glob
+
 import os
 from typing import Dict, List, Optional
 
 # We assume these tools exist in your utils; if not, you might need to adjust imports
-from src.utils.tools import H_to_xyzrpy_ZYX, rot_geodesic_angle_deg, pose_row_to_matrix
+from src.utils.tools import H_to_xyzrpy_ZYX, rot_geodesic_angle_deg, pose_row_to_matrix, choose_csv_interactively
 
 # ---------------------------------------------------------------------
 # CONFIG: Paths relative to project root
@@ -603,35 +603,6 @@ def analyze_imu_vs_robot(
 # ---------------------------------------------------------------------
 # CSV selection
 # ---------------------------------------------------------------------
-def choose_csv_interactively(csv_dir: str) -> str:
-    # Ensure directory exists before globbing
-    if not os.path.exists(csv_dir):
-        print(f"[ERROR] CSV directory not found: {os.path.abspath(csv_dir)}")
-        # Fallback to local if data/CSV fails? Or just crash gracefully
-        raise FileNotFoundError(f"CSV directory not found: {csv_dir}")
-
-    pattern = os.path.join(csv_dir, "*.csv")
-    files = [os.path.basename(f) for f in glob.glob(pattern)]
-    if not files:
-        raise FileNotFoundError(f"No CSV files found with pattern {pattern}")
-
-    files = sorted(files)
-    print("Available CSV files in", csv_dir)
-    for i, name in enumerate(files):
-        print(f"  {i}: {name}")
-
-    num = input(
-        "File to load? 0 for the first and so on...\n"
-        "Press Enter for the last one\n :"
-    )
-    if not num.strip():
-        idx = -1
-    else:
-        idx = int(num)
-
-    chosen = files[idx]
-    print("You chose", chosen)
-    return os.path.join(csv_dir, chosen)
 
 
 # ---------------------------------------------------------------------
