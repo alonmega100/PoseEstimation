@@ -16,6 +16,8 @@ OBJ_TAG_IDS = {1, 2}
 WORLD_TAG_ID = 0
 FPS =30
 
+GAIN = 120.0
+EXPOSURE = 4000.0
 ### FILES PARAMETERS ###
 
 DEFAULT_TRANSFORM_PATH = None  # optional global file (for backwards compat)

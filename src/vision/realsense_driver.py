@@ -1,6 +1,6 @@
 import numpy as np
 import pyrealsense2 as rs
-from src.utils.config import FRAME_W, FRAME_H, FPS
+from src.utils.config import FRAME_W, FRAME_H, FPS, GAIN, EXPOSURE
 
 
 class RealSenseInfraredCap:
@@ -43,10 +43,10 @@ class RealSenseInfraredCap:
 
         if depth_sensor.supports(rs.option.exposure):
             # 8000us = 8ms.
-            depth_sensor.set_option(rs.option.exposure, 4000.0)
+            depth_sensor.set_option(rs.option.exposure, EXPOSURE)
 
         if depth_sensor.supports(rs.option.gain):
-            depth_sensor.set_option(rs.option.gain, 120.0)
+            depth_sensor.set_option(rs.option.gain, GAIN)
 
         # 5. Get intrinsics (for reference, but RealSense handles undistortion internally)
         vsp = rs.video_stream_profile(self.profile.get_stream(rs.stream.infrared, 1))
