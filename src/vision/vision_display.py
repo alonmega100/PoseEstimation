@@ -104,20 +104,20 @@ class VisionDisplay:
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.7
         thickness = 2
-        color = (255, 255, 255)  # Green
+        color = (255, 255, 255)  # White
         
         # Get text size for background rectangle
-        text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+        # text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
         text_x, text_y = 10, frame.shape[0] - 10  # Lower left corner
-        
+        #
         # Draw dark background rectangle behind text
-        cv2.rectangle(
-            frame,
-            (text_x - 3, text_y - text_size[1] - 3),
-            (text_x + text_size[0] + 3, text_y + 3),
-            (0, 0, 0),  # Black background
-            -1  # Filled
-        )
+        # cv2.rectangle(
+        #     frame,
+        #     (text_x - 3, text_y - text_size[1] - 3),
+        #     (text_x + text_size[0] + 3, text_y + 3),
+        #     (0, 0, 0),  # Black background
+        #     -1  # Filled
+        # )
         
         # Draw the serial number text
         cv2.putText(frame, text, (text_x, text_y), font, font_scale, color, thickness)
