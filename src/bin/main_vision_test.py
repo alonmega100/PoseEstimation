@@ -68,20 +68,20 @@ def run_vision_comparison():
                 display.update_frame(sn, vis)
 
             # Build global overlay text (cross-camera delta)
-            overlay_global = []
-            if len(H0i_list) == 2:
-                A, B = H0i_list[0], H0i_list[1]
-                overlay_global.append("Cross-camera delta (A vs B) in tag0 frame:")
-                for tid in sorted(OBJ_TAG_IDS):
-                    if tid in A and tid in B:
-                        pos_err, ang_err, _ = pose_delta(A[tid], B[tid])
-                        overlay_global.append(f"tag{tid}: dpos={pos_err * 1000:6.1f} mm | dang={ang_err:5.2f} deg")
-                    else:
-                        missing = "A" if tid not in A else "B"
-                        overlay_global.append(f"tag{tid}: (missing in cam {missing})")
+            # overlay_global = []
+            # if len(H0i_list) == 2:
+            #     A, B = H0i_list[0], H0i_list[1]
+            #     overlay_global.append("Cross-camera delta (A vs B) in tag0 frame:")
+            #     for tid in sorted(OBJ_TAG_IDS):
+            #         if tid in A and tid in B:
+            #             pos_err, ang_err, _ = pose_delta(A[tid], B[tid])
+            #             overlay_global.append(f"tag{tid}: dpos={pos_err * 1000:6.1f} mm | dang={ang_err:5.2f} deg")
+            #         else:
+            #             missing = "A" if tid not in A else "B"
+            #             overlay_global.append(f"tag{tid}: (missing in cam {missing})")
 
             # Show mosaic; VisionDisplay handles q/Esc
-            if not display.show_mosaic(overlay_global_text=overlay_global if overlay_global else None):
+            if not display.show_mosaic(): #overlay_global_text=overlay_global if overlay_global else None):
                 break
 
     except Exception as e:
