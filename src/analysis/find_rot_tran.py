@@ -4,13 +4,13 @@ from os import listdir
 import os
 import sys
 from src.utils.tools import rot_geodesic_angle_deg
+from src.utils.config import WORLD_TAG_ID
 
 # ---------- config ----------
 # Paths relative to project root
 CSV_DIR = "data/CSV"
 SAVE_PATH = "data/DATA/hand_eye/cam_to_robot_transform.npz"
 
-WORLD_TAG_ID = 2.0                 # change if your world tag id differs
 TIME_TOL = pd.Timedelta('30ms')    # cam↔robot pairing tolerance
 
 

@@ -32,6 +32,44 @@ POSE_PREFIX = "pose_"
 
 
 # ---------------------------------------------------------------------
+# Plotting helpers (optional)
+# ---------------------------------------------------------------------
+def _plot_error_series(
+        times,
+        dists_mm: np.ndarray,
+        title: str,
+        save_path: str,
+) -> None:
+    """Save a time-series plot of |Δp| with mean ± std band."""
+    # Import lazily so matplotlib isn't a hard dependency for CLI usage.
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    dists_mm = np.asarray(dists_mm, dtype=float)
+    if dists_mm.size == 0:
+        return
+
+    mean = float(np.mean(dists_mm))
+    std = float(np.std(dists_mm))
+
+    # Times can be datetime64 or numeric.
+    x = times
+
+    plt.figure()
+    plt.plot(x, dists_mm, linewidth=1)
+    plt.axhline(mean, linewidth=1)
+    plt.fill_between(x, mean - std, mean + std, alpha=0.2)
+    plt.title(title)
+    plt.xlabel("time")
+    plt.ylabel("|Δp| [mm]")
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+
+
+# ---------------------------------------------------------------------
 # Transform loading
 # ---------------------------------------------------------------------
 def load_cam_to_robot_transforms(
@@ -250,6 +288,9 @@ def analyze_camera_pair(
         cam_col: str,
         tag_col: str,
         tag_id_filter: Optional[int] = None,
+        plot: bool = False,
+        plot_dir: str = "plots/performance",
+        csv_label: str = "",
 ) -> None:
     df_pair = df.copy()
 
@@ -279,7 +320,10 @@ def analyze_camera_pair(
         return
 
     all_errors = []
+    all_diffs = []
+    all_times = []
     raw_errors = []  # Store raw position diffs
+    raw_diffs = []
 
     for tag_id in common_tags:
         sub_a = df_a[df_a[tag_col] == tag_id].copy()
@@ -311,6 +355,8 @@ def analyze_camera_pair(
         diffs = pts_a - pts_b
         dists = np.linalg.norm(diffs, axis=1)  # meters
         all_errors.append(dists)
+        all_diffs.append(diffs)
+        all_times.append(merged[time_col].to_numpy())
 
         # --- Raw Error (Before Transform) ---
         # Raw translation columns: pose_03, pose_13, pose_23
@@ -324,48 +370,80 @@ def analyze_camera_pair(
 
         raw_pts_a = np.vstack([rx_a, ry_a, rz_a]).T
         raw_pts_b = np.vstack([rx_b, ry_b, rz_b]).T
-        raw_diffs = raw_pts_a - raw_pts_b
-        raw_dists = np.linalg.norm(raw_diffs, axis=1)
-        raw_errors.append(raw_dists)
+        raw_d = raw_pts_a - raw_pts_b
+        raw_dist = np.linalg.norm(raw_d, axis=1)
+        raw_errors.append(raw_dist)
+        raw_diffs.append(raw_d)
 
     if not all_errors:
         print(f"[WARN] No aligned samples for cameras {cam_a} and {cam_b}.")
         return
 
     all_errors = np.concatenate(all_errors)
-    raw_errors = np.concatenate(raw_errors)
+    all_diffs = np.vstack(all_diffs) if all_diffs else np.empty((0, 3), dtype=float)
+    all_times = np.concatenate(all_times) if all_times else np.array([])
+
+    raw_errors = np.concatenate(raw_errors) if raw_errors else np.array([])
+    raw_diffs = np.vstack(raw_diffs) if raw_diffs else np.empty((0, 3), dtype=float)
 
     # --- Stats Helpers ---
-    def print_stats(errors_m, prefix=""):
+    def print_stats(errors_m, diffs_m: Optional[np.ndarray] = None, prefix=""):
         mse = float(np.mean(errors_m ** 2))
         rmse = float(np.sqrt(mse))
         mean_err = float(np.mean(errors_m))
         median_err = float(np.median(errors_m))
         p95 = float(np.percentile(errors_m, 95))
+        std_err = float(np.std(errors_m))
 
         mse_mm2 = mse * (MM ** 2)
         rmse_mm = rmse * MM
         mean_err_mm = mean_err * MM
         median_err_mm = median_err * MM
         p95_mm = p95 * MM
+        std_err_mm = std_err * MM
 
         print(f"{prefix}Aligned samples : {len(errors_m)}")
         print(f"{prefix}Mean |Δp|       : {mean_err_mm:.2f} mm")
+        print(f"{prefix}Std  |Δp|       : {std_err_mm:.2f} mm")
         print(f"{prefix}Median |Δp|     : {median_err_mm:.2f} mm")
         print(f"{prefix}95th percentile : {p95_mm:.2f} mm")
         print(f"{prefix}MSE             : {mse_mm2:.2f} mm^2")
         print(f"{prefix}RMSE            : {rmse_mm:.2f} mm")
 
+        # Also show per-axis mean/std if we have vectors (useful to see bias vs noise)
+        if diffs_m is not None and isinstance(diffs_m, np.ndarray) and diffs_m.size:
+            diffs_m = np.asarray(diffs_m, dtype=float)
+            mu = diffs_m.mean(axis=0) * MM
+            sd = diffs_m.std(axis=0) * MM
+            print(f"{prefix}Δx mean±std     : {mu[0]:.2f} ± {sd[0]:.2f} mm")
+            print(f"{prefix}Δy mean±std     : {mu[1]:.2f} ± {sd[1]:.2f} mm")
+            print(f"{prefix}Δz mean±std     : {mu[2]:.2f} ± {sd[2]:.2f} mm")
+
     # --- Print Raw Stats (Before Transform) ---
     print(f"\n=== Raw Camera Pair (No Transform): {cam_a} vs {cam_b} ===")
     print("(Distance between sensors in their respective raw coordinates)")
-    print_stats(raw_errors)
+    if raw_errors.size:
+        print_stats(raw_errors, diffs_m=raw_diffs)
+    else:
+        print("[WARN] No raw samples available for this pair.")
 
     # --- Print Aligned Stats (After Transform) ---
     print(f"\n=== Camera pair: {cam_a} vs {cam_b} ===")
     if tag_id_filter is not None:
         print(f"Tag filter: {tag_id_filter}")
-    print_stats(all_errors)
+    print_stats(all_errors, diffs_m=all_diffs)
+
+    if plot:
+        # Save only transformed (base-frame) error plot; that's the meaningful one.
+        safe_csv = os.path.splitext(os.path.basename(csv_label))[0] if csv_label else "session"
+        save_name = f"{safe_csv}__cams_{cam_a}_vs_{cam_b}.png"
+        save_path = os.path.join(plot_dir, save_name)
+        _plot_error_series(
+            all_times,
+            all_errors * MM,
+            title=f"{safe_csv}: {cam_a} vs {cam_b} |Δp| (mean±std)",
+            save_path=save_path,
+        )
 
 
 def analyze_camera_vs_robot(
@@ -378,6 +456,9 @@ def analyze_camera_vs_robot(
         tag_col: str,
         robot_source_name: str = "robot",
         tag_id_filter: Optional[int] = None,
+        plot: bool = False,
+        plot_dir: str = "plots/performance",
+        csv_label: str = "",
 ) -> None:
     df_all = df.copy()
 
@@ -425,6 +506,8 @@ def analyze_camera_vs_robot(
     diffs = pts_cam - pts_robot
     dists = np.linalg.norm(diffs, axis=1)
 
+    std_err = float(np.std(dists))
+
     mse = float(np.mean(dists ** 2))
     rmse = float(np.sqrt(mse))
     mean_err = float(np.mean(dists))
@@ -436,16 +519,36 @@ def analyze_camera_vs_robot(
     mean_err_mm = mean_err * MM
     median_err_mm = median_err * MM
     p95_mm = p95 * MM
+    std_err_mm = std_err * MM
+
+    # Per-axis mean/std in base frame
+    mu = diffs.mean(axis=0) * MM
+    sd = diffs.std(axis=0) * MM
 
     print(f"\n=== Camera vs Robot: {cam_id} vs {robot_source_name} ===")
     if tag_id_filter is not None:
         print(f"Tag filter (camera side): {tag_id_filter}")
     print(f"Aligned samples : {len(dists)}")
     print(f"Mean |Δp|       : {mean_err_mm:.2f} mm")
+    print(f"Std  |Δp|       : {std_err_mm:.2f} mm")
     print(f"Median |Δp|     : {median_err_mm:.2f} mm")
     print(f"95th percentile : {p95_mm:.2f} mm")
     print(f"MSE             : {mse_mm2:.2f} mm^2")
     print(f"RMSE            : {rmse_mm:.2f} mm")
+    print(f"Δx mean±std     : {mu[0]:.2f} ± {sd[0]:.2f} mm")
+    print(f"Δy mean±std     : {mu[1]:.2f} ± {sd[1]:.2f} mm")
+    print(f"Δz mean±std     : {mu[2]:.2f} ± {sd[2]:.2f} mm")
+
+    if plot:
+        safe_csv = os.path.splitext(os.path.basename(csv_label))[0] if csv_label else "session"
+        save_name = f"{safe_csv}__cam_{cam_id}_vs_{robot_source_name}.png"
+        save_path = os.path.join(plot_dir, save_name)
+        _plot_error_series(
+            merged[time_col].to_numpy(),
+            dists * MM,
+            title=f"{safe_csv}: {cam_id} vs {robot_source_name} |Δp| (mean±std)",
+            save_path=save_path,
+        )
 
 
 def analyze_imu_vs_robot(
@@ -620,6 +723,17 @@ def main():
     parser.add_argument("--tag-id", type=int)
     parser.add_argument("--robot-source-name", default="robot")
 
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Save error plots (|Δp| time series with mean±std) into --plot-dir."
+    )
+    parser.add_argument(
+        "--plot-dir",
+        default="plots/performance",
+        help="Directory to save plots when --plot is enabled (relative to project root)."
+    )
+
     args = parser.parse_args()
 
     # ---------------------------
@@ -689,6 +803,9 @@ def main():
                         time_tol=args.time_tol, time_col=args.time_col,
                         cam_col=args.cam_col, tag_col=args.tag_col,
                         tag_id_filter=args.tag_id,
+                        plot=args.plot,
+                        plot_dir=args.plot_dir,
+                        csv_label=csv_file,
                     )
 
         # Camera-vs-robot
@@ -702,6 +819,9 @@ def main():
                     cam_col=args.cam_col, tag_col=args.tag_col,
                     robot_source_name=robot_name,
                     tag_id_filter=args.tag_id,
+                    plot=args.plot,
+                    plot_dir=args.plot_dir,
+                    csv_label=csv_file,
                 )
 
     # IMU vs robot analysis
