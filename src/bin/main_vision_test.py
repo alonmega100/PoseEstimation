@@ -82,6 +82,40 @@ def run_vision_comparison():
                 max_h = max(v.shape[0] for v in vis_list)
                 vis_list_padded = [cv2.copyMakeBorder(v, 0, max_h - v.shape[0], 0, 0,
                                                       cv2.BORDER_CONSTANT, value=(0, 0, 0)) for v in vis_list]
+                
+                # Add serial numbers at lower left corner of each camera feed
+                for i, (vis, sn) in enumerate(zip(vis_list_padded, CAMERA_SERIALS)):
+                    # Draw semi-transparent background for text
+                    text = f"SN: {sn}"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.7
+                    thickness = 2
+                    color = (255, 255, 255)  # White
+                    
+                    # Get text size for background rectangle
+                    text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+                    text_x, text_y = 10, vis.shape[0] - 10  # Lower left corner
+                    
+                    # Draw dark background rectangle behind text
+                    cv2.rectangle(
+                        vis,
+                        (text_x - 3, text_y - text_size[1] - 3),
+                        (text_x + text_size[0] + 3, text_y + 3),
+                        (0, 0, 0),  # Black background
+                        -1  # Filled
+                    )
+                    
+                    # Draw the serial number text
+                    cv2.putText(
+                        vis, 
+                        text, 
+                        (text_x, text_y),
+                        font, 
+                        font_scale, 
+                        color, 
+                        thickness
+                    )
+                
                 mosaic = cv2.hconcat(vis_list_padded)
 
                 # Add delta text to the mosaic (only if comparison was run)
