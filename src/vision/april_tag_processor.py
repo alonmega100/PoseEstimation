@@ -3,7 +3,8 @@ import cv2
 
 from pupil_apriltags import Detector
 from src.utils.tools import to_H, inv_H
-from src.utils.config import FRAME_W, FRAME_H, FPS, WORLD_TAG_ID
+from src.utils.config import (FRAME_W, FRAME_H, FPS, WORLD_TAG_ID, WORLD_TAG_SIZE, OBJ_TAG_SIZE,
+                              OBJ_TAG_IDS)
 from src.vision.realsense_driver import RealSenseInfraredCap
 
 
@@ -13,12 +14,10 @@ class AprilTagProcessor:
     Handles tag detection, pose calculation, and image visualization for a single camera.
     """
 
-    def __init__(self, serial: str, world_tag_size: float, obj_tag_size: float, obj_tag_ids: set,
-                 w=FRAME_W, h=FRAME_H, fps=FPS):
-
-        self.WORLD_TAG_SIZE = world_tag_size
-        self.OBJ_TAG_SIZE = obj_tag_size
-        self.OBJ_TAG_IDS = obj_tag_ids
+    def __init__(self, serial: str, w=FRAME_W, h=FRAME_H, fps=FPS):
+        self.world_tag_size = WORLD_TAG_SIZE
+        self.obj_tag_size = OBJ_TAG_SIZE
+        self.obj_tag_ids = OBJ_TAG_IDS
         self.cap = RealSenseInfraredCap(serial, w, h, fps)
 
         # NOTE: RealSense handles distortion internally, so we use camera intrinsics for reference only
@@ -45,6 +44,7 @@ class AprilTagProcessor:
             rvec, _ = cv2.Rodrigues(R)
             out[tid] = (H, rvec, t, det.corners.astype(int), tag_size_m)
         return out
+
     def _canonicalize_pose_z_positive(self, H: np.ndarray) -> np.ndarray:
         """
         Enforce a deterministic, right-handed orientation for a tag pose H.
@@ -60,6 +60,7 @@ class AprilTagProcessor:
             # rotate tag frame by 180° about its local x-axis
             H[:3, :3] = H[:3, :3] @ np.diag([1, -1, -1])
         return H
+
     def _draw_axes(self, img, K, rvec, tvec, length_m):
         """Draws axes on the image for visualization."""
         axis = np.float32([[0, 0, 0], [length_m, 0, 0], [0, length_m, 0], [0, 0, length_m]])
@@ -89,8 +90,8 @@ class AprilTagProcessor:
         campar = (self.cap.K[0, 0], self.cap.K[1, 1], self.cap.K[0, 2], self.cap.K[1, 2])
 
         # --- Detection ---
-        world_map = self._detect_tags(undist, campar, self.WORLD_TAG_SIZE, {WORLD_TAG_ID})
-        obj_map = self._detect_tags(undist, campar, self.OBJ_TAG_SIZE, self.OBJ_TAG_IDS)
+        world_map = self._detect_tags(undist, campar, self.world_tag_size, {WORLD_TAG_ID})
+        obj_map = self._detect_tags(undist, campar, self.obj_tag_size, self.obj_tag_ids)
         H_c_by_id = {**world_map, **obj_map}
 
         # ... (Rest of the function logic for H0i and drawing remains exactly the same) ...
@@ -104,7 +105,7 @@ class AprilTagProcessor:
                 cv2.line(vis, tuple(corners[k]), tuple(corners[(k + 1) % 4]), (0, 255, 255), 2)
             self._draw_axes(vis, self.cap.K, rvec, tvec, 0.5 * size_used)
 
-            if world_tag_visible and tid in self.OBJ_TAG_IDS:
+            if world_tag_visible and tid in self.obj_tag_ids:
                 H_0c = inv_H(H_c_by_id[WORLD_TAG_ID][0])
                 H_0i = H_0c @ H_c_by_id[tid][0]
                 H_0i = self._canonicalize_pose_z_positive(H_0i)

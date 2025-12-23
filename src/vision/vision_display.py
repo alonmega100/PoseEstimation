@@ -6,12 +6,13 @@ Encapsulates common display logic for mosaic creation, serial number overlays, a
 import cv2
 import numpy as np
 from typing import Dict, Optional, List
+from src.utils.config import CAMERA_SERIALS, FRAME_W, FRAME_H
 
 
 class VisionDisplay:
     """Manages display of multiple camera feeds with customizable overlays."""
     
-    def __init__(self, camera_serials: List[str], frame_w: int, frame_h: int, window_title: str = "Vision Feeds"):
+    def __init__(self, window_title: str = "Vision Feeds"):
         """
         Initialize vision display manager.
         
@@ -21,15 +22,15 @@ class VisionDisplay:
             frame_h: Frame height in pixels
             window_title: Title for the display window
         """
-        self.camera_serials = camera_serials
-        self.frame_w = frame_w
-        self.frame_h = frame_h
+        self.camera_serials = CAMERA_SERIALS
+        self.frame_w = FRAME_W
+        self.frame_h = FRAME_H
         self.window_title = window_title
         
         # Storage for current frames
-        self.frames: Dict[str, np.ndarray] = {sn: np.zeros((frame_h, frame_w, 3), dtype=np.uint8) 
-                                               for sn in camera_serials}
-        self.overlay_texts: Dict[str, List[str]] = {sn: [] for sn in camera_serials}
+        self.frames: Dict[str, np.ndarray] = {serial_num: np.zeros((self.frame_h, self.frame_w, 3), dtype=np.uint8)
+                                               for serial_num in self.camera_serials}
+        self.overlay_texts: Dict[str, List[str]] = {serial_num: [] for serial_num in self.camera_serials}
         
         # Setup window
         cv2.namedWindow(self.window_title, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
@@ -105,7 +106,7 @@ class VisionDisplay:
         font_scale = 0.7
         thickness = 2
         color = (255, 255, 255)  # White
-        
+
         # Get text size for background rectangle
         # text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
         text_x, text_y = 10, frame.shape[0] - 10  # Lower left corner

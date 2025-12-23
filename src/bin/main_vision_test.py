@@ -5,7 +5,7 @@ from typing import List, Tuple, Optional
 from src.vision.april_tag_processor import AprilTagProcessor
 from src.vision.vision_display import VisionDisplay
 from src.utils.tools import inv_H
-from src.utils.config import CAMERA_SERIALS, FRAME_W, FRAME_H, WORLD_TAG_SIZE, OBJ_TAG_SIZE, OBJ_TAG_IDS
+from src.utils.config import CAMERA_SERIALS, FRAME_W, FRAME_H
 
 
 def rot_angle_deg(R: np.ndarray) -> float:
@@ -29,18 +29,13 @@ def run_vision_comparison():
 
     try:
         # ----- Open Cameras (INIT) -----
-        for sn in CAMERA_SERIALS:
+        for serial_num in CAMERA_SERIALS:
             try:
                 processors.append(
-                    AprilTagProcessor(
-                        serial=sn,
-                        world_tag_size=WORLD_TAG_SIZE,
-                        obj_tag_size=OBJ_TAG_SIZE,
-                        obj_tag_ids=OBJ_TAG_IDS,
-                    )
+                    AprilTagProcessor(serial=serial_num)
                 )
             except Exception as e:
-                print(f"[cam] Open failed {sn}: {e}", file=sys.stderr)
+                print(f"[cam] Open failed {serial_num}: {e}", file=sys.stderr)
 
         if len(processors) < 1:
             raise RuntimeError("Failed to open any cameras. Cannot run vision comparison.")
@@ -50,7 +45,7 @@ def run_vision_comparison():
 
         # ----- Display Setup (VisionDisplay) -----
         WIN = "AprilTag REL Pose — comparison"
-        display = VisionDisplay(CAMERA_SERIALS, FRAME_W, FRAME_H, window_title=WIN)
+        display = VisionDisplay(window_title=WIN)
 
         print("Press q/Esc to quit.")
 
@@ -64,9 +59,11 @@ def run_vision_comparison():
                 H0i_list.append(H0i)
 
             # Update frames in display (by serial order)
-            for sn, vis in zip(CAMERA_SERIALS, vis_list):
-                display.update_frame(sn, vis)
+            for serial_num, vis in zip(CAMERA_SERIALS, vis_list):
+                display.update_frame(serial_num, vis)
 
+
+            # print(vis_list)
             # Build global overlay text (cross-camera delta)
             # overlay_global = []
             # if len(H0i_list) == 2:

@@ -270,12 +270,7 @@ def vision_processing_thread(
 
     try:
         try:
-            processor = AprilTagProcessor(
-                serial=serial_num,
-                world_tag_size=WORLD_TAG_SIZE,
-                obj_tag_size=OBJ_TAG_SIZE,
-                obj_tag_ids=OBJ_TAG_IDS,
-            )
+            processor = AprilTagProcessor(serial_num)
         except Exception as e:
             logging.exception(f"Failed to init AprilTagProcessor[{serial_num}]: {e}")
             return
@@ -510,7 +505,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     command_t.start()
 
     WIN = "Concurrent Vision Feed"
-    display = VisionDisplay(CAMERA_SERIALS, FRAME_W, FRAME_H, window_title=WIN)
+    display = VisionDisplay(window_title=WIN)
 
     try:
         while not stop_event.is_set():
