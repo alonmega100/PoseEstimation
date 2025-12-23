@@ -13,22 +13,22 @@ import json
 
 from src.robot.panda_controller import PandaController, DEFAULT_SPEED_FACTOR
 from src.vision.april_tag_processor import AprilTagProcessor
+from src.vision.vision_display import VisionDisplay
 from src.utils.tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator
 from src.utils.hdf5_writer import HDF5Writer
-from src.utils.config import OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE, CAMERA_SERIALS
+from src.utils.config import OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE, CAMERA_SERIALS, FRAME_W, FRAME_H
 from src.imu.imu_reader import IMUReader
-
 
 # -------------------------------------------------
 # Config
 # -------------------------------------------------
 
 
-IMU_CORRECTION_INTERVAL = 3.0   # seconds; how often to "snap" IMU to camera tag
+IMU_CORRECTION_INTERVAL = 3.0  # seconds; how often to "snap" IMU to camera tag
 IMU_CORRECTION_ZERO_VEL = True  # zero IMU velocity at correction
 IMU_CORRECTION_TAG_ID = 2  # which tag to use as the ground-truth position
 
-TARGET_LOG_HZ = 30.0     # robot logger rate
+TARGET_LOG_HZ = 30.0  # robot logger rate
 LOG_INTERVAL = 1.0 / TARGET_LOG_HZ
 NUM_OF_COMMANDS_TO_GENERATE = 20
 POSE_COLS = [f"pose_{r}{c}" for r in range(4) for c in range(4)]
@@ -44,6 +44,7 @@ logging.basicConfig(
 shared_state = {
     "tag_pose_A": {},
     "vision_image": {},
+    "tag_pose_by_cam": {},
     "robot_pose_R": np.identity(4),
 }
 state_lock = threading.Lock()
@@ -54,13 +55,14 @@ command_queues: Dict[str, queue.Queue] = {
     **{sn: queue.Queue(maxsize=100) for sn in CAMERA_SERIALS}
 }
 
+
 # -------------------------------------------------
 # Command thread (stdin)
 # -------------------------------------------------
 
 def command_writer_thread(
-    stop_event: threading.Event,
-    no_more_commands_event: threading.Event,
+        stop_event: threading.Event,
+        no_more_commands_event: threading.Event,
 ):
     logging.info("Command writer started")
     list_of_movements = list_of_movements_generator(NUM_OF_COMMANDS_TO_GENERATE)
@@ -99,7 +101,6 @@ def command_writer_thread(
                 stop_event.set()
                 break
 
-
             # everything else goes to the robot as move
             try:
                 print("putting the toopel", cmd)
@@ -122,20 +123,18 @@ def command_writer_thread(
 # Robot MOVE thread (blocking moves only)
 # -------------------------------------------------
 def robot_move_thread(
-    controller: PandaController,
-    stop_event: threading.Event,
-    no_more_commands_event: threading.Event,
+        controller: PandaController,
+        stop_event: threading.Event,
+        no_more_commands_event: threading.Event,
 ):
-
-
     logging.info("Robot MOVE thread started")
-#    --- Manual Initialization ---
+    #    --- Manual Initialization ---
 
     updated_H, valid = controller.pos_command_to_H("yaw 20 -z 0.15")
 
     controller.robot.move_to_pose(updated_H)
 
-#  --- End of Initialization ---
+    #  --- End of Initialization ---
     while not stop_event.is_set():
         try:
             move_cmds = []
@@ -187,12 +186,12 @@ def robot_move_thread(
 # Robot LOGGER thread (runs at fixed rate, dumps everything)
 # -------------------------------------------------
 def robot_logger_thread(
-    controller: PandaController,
-    stop_event: threading.Event,
-    log_event,
-    discard: bool,
-    writer: Optional["HDF5Writer"],  # may be None when discard=True
-    hz: float = 30.0,
+        controller: PandaController,
+        stop_event: threading.Event,
+        log_event,
+        discard: bool,
+        writer: Optional["HDF5Writer"],  # may be None when discard=True
+        hz: float = 30.0,
 ):
     logging.info("Robot LOGGER thread started")
     period = 1.0 / hz
@@ -209,7 +208,7 @@ def robot_logger_thread(
             H = controller.robot.get_pose()
             t = time.time()
             if writer is not None:
-            # ---- 1) push to HDF5
+                # ---- 1) push to HDF5
                 try:
                     writer.add_robot_data(
                         state.q,
@@ -255,15 +254,16 @@ def robot_logger_thread(
 
     logging.info("Robot LOGGER thread exiting")
 
+
 # -------------------------------------------------
 # Vision (AprilTag) threads
 #   log every frame
 # -------------------------------------------------
 def vision_processing_thread(
-    serial_num: str,
-    stop_event: threading.Event,
-    log_event,
-    discard: bool
+        serial_num: str,
+        stop_event: threading.Event,
+        log_event,
+        discard: bool
 ):
     logging.info(f"Vision processing started for {serial_num}")
     processor: Optional[AprilTagProcessor] = None
@@ -286,7 +286,7 @@ def vision_processing_thread(
                 vis_img, H0i_dict = processor.process_frame()
                 with state_lock:
                     shared_state["vision_image"][serial_num] = vis_img
-
+                    shared_state["tag_pose_by_cam"][serial_num] = H0i_dict
 
                 # log this frame’s tag poses (even if identical)
                 if not discard:
@@ -313,12 +313,13 @@ def vision_processing_thread(
                 pass
         logging.info(f"Vision processing exiting for {serial_num}")
 
+
 def imu_thread(
-    stop_event: threading.Event,
-    log_event,
-    discard: bool,
-    imu_reader: IMUReader,
-    correction_interval: float = IMU_CORRECTION_INTERVAL,
+        stop_event: threading.Event,
+        log_event,
+        discard: bool,
+        imu_reader: IMUReader,
+        correction_interval: float = IMU_CORRECTION_INTERVAL,
 ):
     """
     Poll IMUReader.get_latest(), log samples, and periodically snap the
@@ -334,7 +335,7 @@ def imu_thread(
     if imu_reader is None:
         logging.warning("IMU thread: imu_reader is None, exiting immediately")
         return
-    
+
     logging.info("IMU thread started")
     backoff = 0.01
     last_correction_wall = time.time()
@@ -410,6 +411,7 @@ def imu_thread(
     finally:
         logging.info("IMU thread exiting")
 
+
 # -------------------------------------------------
 # Main orchestrator
 # -------------------------------------------------
@@ -431,7 +433,6 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     os.makedirs("../../data/CSV", exist_ok=True)
     writer = None
     if not discard:
-
         # HDF5 writer
         writer = HDF5Writer("../../data/DATA/session.h5", "session")
         writer.start()
@@ -503,42 +504,30 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
             daemon=True,
         )
         imu_t.start()
-    
+
     for t in vision_threads:
         t.start()
     command_t.start()
 
     WIN = "Concurrent Vision Feed"
-    cv2.namedWindow(WIN, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
+    display = VisionDisplay(CAMERA_SERIALS, FRAME_W, FRAME_H, window_title=WIN)
 
     try:
         while not stop_event.is_set():
-            # show combined camera view
+            # Get latest images from all cameras
             with state_lock:
-                images = [shared_state["vision_image"].get(sn) for sn in CAMERA_SERIALS]
-            # Pair images with their serial numbers
-            image_serial_pairs = [(img, sn) for img, sn in zip(images, CAMERA_SERIALS) if img is not None]
-            if image_serial_pairs:
-                max_h = max(img.shape[0] for img, _ in image_serial_pairs)
-                padded = []
-                for img, sn in image_serial_pairs:
-                    # Add serial number text overlay
-                    img_copy = img.copy()
-                    cv2.putText(
-                        img_copy, f"SN: {sn}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
-                    )
-                    # Pad to max height
-                    padded_img = cv2.copyMakeBorder(
-                        img_copy, 0, max_h - img_copy.shape[0], 0, 0,
-                        cv2.BORDER_CONSTANT, value=(0, 0, 0)
-                    )
-                    padded.append(padded_img)
-                mosaic = cv2.hconcat(padded)
-                cv2.imshow(WIN, mosaic)
+                images = {sn: shared_state["vision_image"].get(sn) for sn in CAMERA_SERIALS}
+                tag_by_cam = {sn: shared_state.get("tag_pose_by_cam", {}).get(sn, {}) for sn in CAMERA_SERIALS}
 
-            k = cv2.waitKey(1) & 0xFF
-            if k in (27, ord('q')):
+            # Update display with all available images
+            for sn, img in images.items():
+                if img is not None:
+                    tags = tag_by_cam.get(sn) or {}
+                    overlay = [f"tags: {len(tags)}"]
+                    display.update_frame(sn, img, overlay_text=overlay)
+
+            # Show mosaic
+            if not display.show_mosaic():
                 stop_event.set()
                 break
 
@@ -547,6 +536,11 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     finally:
         logging.info("Shutting down...")
         stop_event.set()
+
+        # Cleanup display
+        if display:
+            display.cleanup()
+
         # STEP 1: Wait for robot threads (usually fast)
         robot_move_t.join(timeout=2.0)
         robot_log_t.join(timeout=2.0)
@@ -684,7 +678,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                 writer.stop()
             except Exception as e:
                 logging.error(f"Failed to stop HDF5 writer: {e}")
-        
+
         # Clean up OpenCV windows safely
         try:
             cv2.destroyAllWindows()
