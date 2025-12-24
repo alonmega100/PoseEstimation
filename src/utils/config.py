@@ -24,5 +24,5 @@ USE_WORLD_TAG = True
 ### FILES PARAMETERS ###
 
 DEFAULT_TRANSFORM_PATH = None  # optional global file (for backwards compat)
-DEFAULT_TRANSFORM_DIR = "../../data/DATA/hand_eye"
+DEFAULT_TRANSFORM_DIR = "data/DATA/hand_eye"
 DEFAULT_CSV_DIR = "../../data/CSV"

@@ -4,6 +4,7 @@ import argparse
 import numpy as np
 import plotly.graph_objects as go
 import os
+from src.utils.config import DEFAULT_TRANSFORM_DIR
 from src.utils.tools import (
     load_cam_to_robot_transforms, choose_csv_interactively,
     moving_average, find_latest_csv
@@ -73,7 +74,7 @@ def extract_points(csv_path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv")
-    parser.add_argument("--transform-dir", default="data/DATA/hand_eye")
+    parser.add_argument("--transform-dir", default=DEFAULT_TRANSFORM_DIR)
     parser.add_argument("--imu-smoothing", type=int, default=1)
     parser.add_argument("--only-aligned", action="store_true", help="Hide raw camera traces")
     # Toggle lines (defaults from your script)
@@ -103,10 +104,8 @@ def main():
     # 3. Transform Cameras
     # Note: We filter out non-camera points later based on --only-aligned if needed
     cams = [p for p in points if p["kind"] == "camera"]
-    cam_ids = sorted(list(set(p["source"] for p in cams)))
     transforms = load_cam_to_robot_transforms(args.transform_dir)
-    print("TRANSFORMS==========================")
-    print(transforms)
+
 
     aligned_points = []
     for p in cams:
@@ -182,13 +181,13 @@ def main():
 
     # --- 4. IMU ---
     # Offset 10, Size 4
-    add_traces_for_kind("imu", "IMU", offset=10, size=4, connect_lines=True)
-
-    fig.update_layout(
-        scene=dict(aspectmode="data"),
-        title=f"3D Robot, Camera & IMU Observations: {os.path.basename(csv_path)}",
-        margin=dict(l=0, r=0, b=0, t=40),
-    )
+    # add_traces_for_kind("imu", "IMU", offset=10, size=4, connect_lines=True)
+    #
+    # fig.update_layout(
+    #     scene=dict(aspectmode="data"),
+    #     title=f"3D Robot, Camera & IMU Observations: {os.path.basename(csv_path)}",
+    #     margin=dict(l=0, r=0, b=0, t=40),
+    # )
 
     # Save and show
     html_path = os.path.splitext(csv_path)[0] + ".html"

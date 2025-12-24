@@ -240,28 +240,6 @@ def load_cam_to_robot_transforms(calib_dir):
                     print(f"  -> Failed to load {fname}: {e}")
 
     return calibs
-#
-# def load_cam_to_robot_transforms(transform_dir: str) -> Dict[
-#     str, np.ndarray]:
-#     """Robustly load transforms for list of camera IDs."""
-#     transforms = {}
-#
-#     # 1. Try per-camera files
-#     if os.path.exists(transform_dir):
-#         for cid in CAMERA_SERIALS:
-#             fpath = os.path.join(transform_dir, f"cam_{cid}_to_robot_transform.npz")
-#             if os.path.exists(fpath):
-#                 try:
-#                     d = np.load(fpath, allow_pickle=True)
-#                     if "R" in d and "t" in d:
-#                         transforms[cid] = to_H(d["R"], d["t"])
-#                 except Exception as e:
-#                     print(f"[WARN] Failed to load {fpath}: {e}")
-#
-#     # 2. Try global fallback if provided
-#
-#     return transforms
-#
 
 def load_imu_to_robot_transform(imu_source: str, transform_dir: str) -> Optional[np.ndarray]:
     fpath = os.path.join(transform_dir, f"imu_{imu_source}_to_robot_transform.npz")
