@@ -2,7 +2,7 @@ import numpy as np
 
 from panda_py import Panda
 from scipy.spatial.transform import Rotation as R
-from src.utils.config import DEFAULT_SPEED_FACTOR
+from src.utils.config import DEFAULT_SPEED_FACTOR, ROBOT_IP
 
 # --- CONFIGURATION CONSTANTS ---
 
@@ -17,19 +17,19 @@ class PandaController:
     AXIS_MAP = {'x': 0, 'y': 1, 'z': 2}
     ROTATION_AXIS_MAP = {'yaw': 'z', 'pitch': 'y', 'roll': 'x'}
 
-    def __init__(self, robot_ip: str, default_speed_factor: float = DEFAULT_SPEED_FACTOR):
+    def __init__(self):
         """Initializes the robot connection and motion settings."""
-        self.ROBOT_IP = robot_ip
-        self.speed_factor = default_speed_factor
+        self.robot_ip = ROBOT_IP
+        self.speed_factor = DEFAULT_SPEED_FACTOR
         self.robot = self._connect_to_robot()
 
         print(f"[config] Current speed factor is {self.speed_factor:.2f}")
 
     def _connect_to_robot(self):
         """Handles the robot connection logic."""
-        print(f"[robot] Attempting to connect to Panda at {self.ROBOT_IP}...")
+        print(f"[robot] Attempting to connect to Panda at {self.robot_ip}...")
         try:
-            robot = Panda(self.ROBOT_IP)
+            robot = Panda(self.robot_ip)
             print(f"[robot] Connected successfully!")
             return robot
         except Exception as e:

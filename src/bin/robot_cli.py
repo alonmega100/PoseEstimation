@@ -1,8 +1,7 @@
+import time
+
 from src.robot.panda_controller import PandaController
 from src.utils.concurrent_runner import run_concurrent_system
-from src.utils.config import ROBOT_IP
-
-import time
 
 
 def position_control_loop(controller: PandaController):
@@ -45,7 +44,7 @@ def position_control_loop(controller: PandaController):
 
 def main():
     try:
-        controller = PandaController(ROBOT_IP)
+        controller = PandaController()
     except ConnectionError:
         print("Application terminated due to failed robot connection.")
         return

@@ -9,14 +9,14 @@ class RealSenseInfraredCap:
     Uses Infrared stream #1 (Left Imager), which aligns with the depth origin.
     """
 
-    def __init__(self, serial: str, w=FRAME_W, h=FRAME_H, fps=FPS):
+    def __init__(self, serial: str):
         self.serial = serial
         self.pipe = rs.pipeline()
         self.cfg = rs.config()
         self.cfg.enable_device(str(serial))
 
         # 1. Enable Infrared stream (Index 1) instead of Color
-        self.cfg.enable_stream(rs.stream.infrared, 1, w, h, rs.format.y8, fps)
+        self.cfg.enable_stream(rs.stream.infrared, 1, FRAME_W, FRAME_H, rs.format.y8, FPS)
 
         self.profile = self.pipe.start(self.cfg)
 
@@ -55,7 +55,7 @@ class RealSenseInfraredCap:
                            [0, intr.fy, intr.ppy],
                            [0, 0, 1]], np.float32)
         self.D = np.array(intr.coeffs[:5], np.float32)
-        print(f"[cam-IR] {serial}: {intr.width}x{intr.height}@{fps} (Emitter OFF, Exp=8ms)")
+        print(f"[cam-IR] {serial}: {intr.width}x{intr.height}@{FPS} (Emitter OFF, Exp=8ms)")
 
     def read(self):
         try:

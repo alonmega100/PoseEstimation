@@ -16,7 +16,7 @@ from src.vision.april_tag_processor import AprilTagProcessor
 from src.vision.vision_display import VisionDisplay
 from src.utils.tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator
 from src.utils.hdf5_writer import HDF5Writer
-from src.utils.config import OBJ_TAG_IDS, WORLD_TAG_SIZE, OBJ_TAG_SIZE, CAMERA_SERIALS, FRAME_W, FRAME_H
+from src.utils.config import OBJ_TAG_IDS, CAMERA_SERIALS
 from src.imu.imu_reader import IMUReader
 
 # -------------------------------------------------
@@ -132,7 +132,7 @@ def robot_move_thread(
 
     updated_H, valid = controller.pos_command_to_H("yaw 20 -z 0.15")
 
-    controller.robot.move_to_pose(updated_H)
+    controller.robot.move_to_pose(updated_H, speed_factor=controller.speed_factor)
 
     #  --- End of Initialization ---
     while not stop_event.is_set():
@@ -161,7 +161,7 @@ def robot_move_thread(
 
                 if valid and updated_H is not None:
                     try:
-                        controller.robot.move_to_pose(updated_H, speed_factor=DEFAULT_SPEED_FACTOR)
+                        controller.robot.move_to_pose(updated_H,speed_factor=controller.speed_factor)  #, speed_factor=DEFAULT_SPEED_FACTOR)
                     except Exception as e:
                         logging.error(f"move_to_pose failed: {e}")
 
