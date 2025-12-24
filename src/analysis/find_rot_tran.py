@@ -1,504 +1,153 @@
 import numpy as np
 import pandas as pd
-from os import listdir
+import argparse
 import os
 import sys
-from src.utils.tools import rot_geodesic_angle_deg, rpy_to_R_deg
-from src.utils.config import WORLD_TAG_ID, CAMERA_SERIALS, USE_WORLD_TAG
-
-# ---------- config ----------
-# Paths relative to project root
-CSV_DIR = "data/CSV"
-SAVE_PATH = "data/DATA/hand_eye/cam_to_robot_transform.npz"
-
-TIME_TOL = pd.Timedelta('30ms')    # cam↔robot pairing tolerance
-
-
-
-# Check if directory exists
-if not os.path.exists(CSV_DIR):
-    print(f"[ERROR] CSV directory not found at: {os.path.abspath(CSV_DIR)}")
-    sys.exit(1)
-
-csv_files = [f for f in listdir(CSV_DIR) if f.endswith(".csv")]
-sorted_files = sorted(csv_files)
-
-if not sorted_files:
-    print(f"[ERROR] No .csv files found in {CSV_DIR}")
-    sys.exit(1)
-
-print("Available CSV files:")
-for i, f in enumerate(sorted_files):
-    print(f"  {i}: {f}")
-
-num = input(
-    "File to load? 0 for the first and so on...\n"
-    " Press Enter for the last one\n :"
+from src.utils.tools import (
+    ransac_rigid_transform, rigid_transform, nearest_merge,
+    choose_csv_interactively, rpy_to_R_deg, rot_geodesic_angle_deg,
+    pose_row_to_matrix
 )
+from src.utils.config import WORLD_TAG_ID, CAMERA_SERIALS
 
-if not num.strip():
-    idx = -1
-else:
-    idx = int(num)
-
-chosen_file = sorted_files[idx]
-print("You chose ", chosen_file)
-df = pd.read_csv(os.path.join(CSV_DIR, chosen_file))
-
-
-# ---------- helpers ----------
-
-def ransac_rigid_transform(
-    A, B,
-    sample_size=3,              # 3 points are enough for a rigid 3D transform
-    thresh=0.01,                # in meters (1 cm). Tune to your noise level
-    max_iters=3000,
-    min_inliers_ratio=0.3,      # require at least this fraction as inliers
-    random_state=None
-):
-    """
-    Robustly fit R,t s.t. R@A + t ≈ B using RANSAC.
-    Returns: R (3x3), t (3,), stats dict, inliers_mask (bool[N])
-    """
-    A = np.asarray(A, float); B = np.asarray(B, float)
-    assert A.shape == B.shape and A.shape[1] == 3
-    N = len(A)
-    if N < sample_size:
-        raise ValueError(f"Not enough points for RANSAC: N={N} < sample_size={sample_size}")
-
-    rng = np.random.default_rng(random_state)
-    best_inliers = None
-    best_count = -1
-    best_err = np.inf
-    best_R = None
-    best_t = None
-
-    for _ in range(max_iters):
-        idx = rng.choice(N, size=sample_size, replace=False)
-        try:
-            R_try, t_try = rigid_transform(A[idx], B[idx])
-        except np.linalg.LinAlgError:
-            continue
-
-        pred = (R_try @ A.T).T + t_try
-        resid = np.linalg.norm(pred - B, axis=1)
-        inliers = resid < thresh
-        count = int(inliers.sum())
-
-        if count > best_count:
-            # track the best by inlier count, tie-break by mean error
-            if count >= sample_size:
-                pred_i = (R_try @ A[inliers].T).T + t_try
-                err_mean = float(np.linalg.norm(pred_i - B[inliers], axis=1).mean())
-            else:
-                err_mean = np.inf
-
-            best_count = count
-            best_err = err_mean
-            best_inliers = inliers
-            best_R, best_t = R_try, t_try
-
-    if best_inliers is None or best_count < max(sample_size, int(min_inliers_ratio * N)):
-        raise RuntimeError(
-            f"RANSAC failed: best_inliers={best_count} of {N}. "
-            f"Try increasing thresh or max_iters."
-        )
-
-    # Refit on all inliers for final R,t
-    R, t = rigid_transform(A[best_inliers], B[best_inliers])
-    pred = (R @ A.T).T + t
-    resid = np.linalg.norm(pred - B, axis=1)
-
-    stats = {
-        "N_total": int(N),
-        "inliers": int(best_inliers.sum()),
-        "inlier_ratio": float(best_inliers.mean()),
-        "thresh": float(thresh),
-        "rms_all": float(np.sqrt((resid**2).mean())),
-        "mean_all": float(resid.mean()),
-        "median_all": float(np.median(resid)),
-        "max_all": float(resid.max()),
-        "rms_inliers": float(np.sqrt((resid[best_inliers]**2).mean())),
-        "mean_inliers": float(resid[best_inliers].mean()),
-        "median_inliers": float(np.median(resid[best_inliers])),
-        "max_inliers": float(resid[best_inliers].max()),
-    }
-    return R, t, stats, best_inliers
+# Config
+DEFAULT_CSV_DIR = "data/CSV"
+SAVE_DIR = "data/DATA/hand_eye"
+TIME_TOL = pd.Timedelta('30ms')
 
 
 def pick_xyz(df_like, suffix=""):
-    cols = [f"pose_03{suffix}", f"pose_13{suffix}", f"pose_23{suffix}"]
-    return df_like[cols].to_numpy()
+    return df_like[[f"pose_03{suffix}", f"pose_13{suffix}", f"pose_23{suffix}"]].to_numpy()
 
 
-def rigid_transform(A, B):
-    """Least-squares R,t s.t. R@A + t ≈ B."""
-    A = np.asarray(A); B = np.asarray(B)
-    ca, cb = A.mean(axis=0), B.mean(axis=0)
-    AA, BB = A - ca, B - cb
-    U, S, Vt = np.linalg.svd(AA.T @ BB)
-    R = Vt.T @ U.T
-    if np.linalg.det(R) < 0:  # reflection fix
-        Vt[-1, :] *= -1
-        R = Vt.T @ U.T
-    t = cb - R @ ca
-    return R, t
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--csv", help="Path to CSV file")
+    parser.add_argument("--csv-dir", default=DEFAULT_CSV_DIR)
+    args = parser.parse_args()
 
+    # Load CSV
+    if args.csv:
+        csv_path = args.csv
+    else:
+        try:
+            csv_path = choose_csv_interactively(args.csv_dir)
+        except Exception as e:
+            print(e)
+            sys.exit(1)
 
-def nearest_merge(cam_df, rob_df, tol=TIME_TOL):
-    """Nearest-in-time merge; keeps only matches within tol."""
-    L = cam_df.sort_values("timestamp").copy()
-    R = rob_df.sort_values("timestamp").copy()
-    m = pd.merge_asof(
-        L, R,
-        on="timestamp",
-        direction="nearest",
-        tolerance=tol,
-        suffixes=("_cam", "_rob")
-    )
-    return m.dropna(subset=["pose_03_rob"])
+    print(f"Loading: {csv_path}")
+    df = pd.read_csv(csv_path)
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
 
-def nearest_merge_imu(imu_df, rob_df, tol=TIME_TOL):
-    """
-    Nearest-in-time merge for IMU vs robot.
+    robot = df[df['source'] == 'robot']
 
-    We only require IMU orientation (imu_yaw_deg, imu_pitch_deg, imu_roll_deg)
-    and robot pose (pose_ij_rob). IMU position is ignored.
-    """
-    L = imu_df.sort_values("timestamp").copy()
-    R = rob_df.sort_values("timestamp").copy()
-    m = pd.merge_asof(
-        L,
-        R,
-        on="timestamp",
-        direction="nearest",
-        tolerance=tol,
-        suffixes=("", "_rob"),  # keep IMU cols unchanged; robot pose gets _rob
-    )
+    # ----------------------------------------
+    # 1. Camera <-> Robot Calibration
+    # ----------------------------------------
+    all_sources = sorted(df["source"].astype(str).unique())
+    cam_sources = [s for s in all_sources if s != "robot" and not s.lower().startswith("imu")]
 
-    needed = [
-        "imu_yaw_deg",
-        "imu_pitch_deg",
-        "imu_roll_deg",
-        "pose_00_rob",
-        "pose_01_rob",
-        "pose_02_rob",
-        "pose_10_rob",
-        "pose_11_rob",
-        "pose_12_rob",
-        "pose_20_rob",
-        "pose_21_rob",
-        "pose_22_rob",
-    ]
-    m = m.dropna(subset=[c for c in needed if c in m.columns])
-    return m
+    for src in cam_sources:
+        cam_df = df[df["source"] == src]
+        # Filter for world tag snapshots
+        cam_tag = cam_df[(cam_df["event"] == "tag_pose_snapshot") & (cam_df["tag_id"] == WORLD_TAG_ID)]
 
-def stack_and_fit_ransac(
-    cam_list, robot_df, tag_id,
-    time_tol=pd.Timedelta('30ms'),
-    ransac_thresh=0.01,         # meters
-    max_iters=3000,
-    min_inliers_ratio=0.3,
-    random_state=None
-):
-    """Build stacked A,B from cams and run RANSAC."""
-    A_list, B_list = [], []
-    for cam_df in cam_list:
-        cam_tag = cam_df[
-            (cam_df['event'] == 'tag_pose_snapshot') &
-            (cam_df['tag_id'] == tag_id)
-        ]
-        m = nearest_merge(cam_tag, robot_df, tol=time_tol)
-        if m.empty:
+        if cam_tag.empty:
+            print(f"[{src}] No tag snapshots found for ID {WORLD_TAG_ID}")
             continue
-        A_list.append(pick_xyz(m, "_cam"))
-        B_list.append(pick_xyz(m, "_rob"))
 
-    if not A_list:
-        raise RuntimeError("No cam↔robot matches found (check tag_id or TIME_TOL).")
+        # Merge
+        m = nearest_merge(cam_tag, robot, tol=TIME_TOL, suffix_cam="_cam", suffix_rob="_rob")
+        m = m.dropna(subset=["pose_03_rob"])
 
-    A = np.vstack(A_list)
-    B = np.vstack(B_list)
+        if m.empty:
+            print(f"[{src}] No time-aligned matches found.")
+            continue
 
-    R, t, stats, inliers = ransac_rigid_transform(
-        A, B,
-        sample_size=3,
-        thresh=ransac_thresh,
-        max_iters=max_iters,
-        min_inliers_ratio=min_inliers_ratio,
-        random_state=random_state
-    )
-    stats.update({"N_pairs_stacked": int(len(A))})
-    return R, t, stats, inliers
+        A = pick_xyz(m, "_cam")
+        B = pick_xyz(m, "_rob")
 
+        try:
+            R, t, stats, _ = ransac_rigid_transform(A, B, random_state=42)
+            print(f"\n=== {src} -> Robot Result ===")
+            print(f"R=\n{R}\nt={t}")
+            print(f"Stats: {stats}")
 
-# ---------- parse timestamps ----------
-df["timestamp"] = pd.to_datetime(df["timestamp"])
+            save_path = os.path.join(SAVE_DIR, f"cam_{src}_to_robot_transform.npz")
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            np.savez(save_path, R=R, t=t, stats=stats, source=src)
+            print(f"Saved to {save_path}")
+        except Exception as e:
+            print(f"[{src}] RANSAC failed: {e}")
 
-# Split sources
-robot = df[df['source'] == 'robot'][(df["event"] == "pose_snapshot")]
+    # ----------------------------------------
+    # 2. IMU <-> Robot Orientation
+    # ----------------------------------------
+    imu_sources = [s for s in all_sources if s.lower().startswith("imu")]
+    for src in imu_sources:
+        imu_df = df[df["source"] == src]
+        m = nearest_merge(imu_df, robot, tol=TIME_TOL, suffix_rob="_rob")
 
-# For compatibility: keep these if you still want them
+        # Drop invalid rows immediately
+        req_cols = ["imu_yaw_deg", "imu_pitch_deg", "imu_roll_deg", "pose_00_rob"]
+        if not set(req_cols).issubset(m.columns):
+            continue
 
+        m = m.dropna(subset=req_cols)
 
+        if m.empty:
+            print(f"[{src}] No valid IMU-Robot aligned samples.")
+            continue
 
-def fit_one(cam_df, name):
-    cam_tag = cam_df[
-        (cam_df["event"] == "tag_pose_snapshot") &
-        (cam_df["tag_id"] == WORLD_TAG_ID)
-    ]
-    m = nearest_merge(cam_tag, robot)
-    if m.empty:
-        print(f"[{name}] no matches")
-        return None
-    R, t = rigid_transform(pick_xyz(m, "_cam"), pick_xyz(m, "_rob"))
-    aligned = (R @ pick_xyz(m, "_cam").T).T + t
-    e = np.linalg.norm(aligned - pick_xyz(m, "_rob"), axis=1)
-    print(f"[{name}] N={len(e)} | mean={e.mean():.6f} | median={np.median(e):.6f} | max={e.max():.6f}")
-    return R, t
+        # Build Rotation Lists
+        R_rob_list, R_imu_list = [], []
+        for _, row in m.iterrows():
+            try:
+                Rr = pose_row_to_matrix(row, "pose_")[:3, :3]  # Robot
+                Ri = rpy_to_R_deg(row["imu_yaw_deg"], row["imu_pitch_deg"], row["imu_roll_deg"])
 
-# Build camera dfs from the configured serial list
-cams = []
-cam_sources_present = []
+                # Check for NaNs/Infs in matrices
+                if not (np.isfinite(Rr).all() and np.isfinite(Ri).all()):
+                    continue
 
-for serial_number in CAMERA_SERIALS:
-    cam_df = df[df["source"] == serial_number]
-    if cam_df.empty:
-        print(f"[cam_{serial_number}] no rows for this camera in CSV, skipping.")
-        continue
+                R_rob_list.append(Rr)
+                R_imu_list.append(Ri)
+            except Exception:
+                continue
 
-    cams.append(cam_df)
-    cam_sources_present.append(serial_number)
+        if not R_rob_list:
+            print(f"[{src}] No valid rotation matrices could be constructed.")
+            continue
 
-    # Optional diagnostics: plain LSQ per camera
-    fit_one(cam_df, f"{serial_number}")
+        # Procrustes for Rotation
+        M = np.zeros((3, 3))
+        for Rr, Ri in zip(R_rob_list, R_imu_list):
+            M += Rr @ Ri.T
 
-# --- Combined RANSAC fit using ALL cameras found from CAMERA_SERIALS ---
-if len(cams) >= 3:
-    try:
-        R, t, stats, inliers = stack_and_fit_ransac(
-            cams,
-            robot,
-            WORLD_TAG_ID,
-            time_tol=TIME_TOL,
-            ransac_thresh=0.01,
-            max_iters=3000,
-            min_inliers_ratio=0.3,
-            random_state=42
-        )
+        # Validate M before SVD
+        if not np.isfinite(M).all():
+            print(f"[{src}] Error: Accumulated matrix M contains NaNs or Infs. Skipping.")
+            continue
 
-        print("\n=== RANSAC (combined cameras) -> Robot transform ===")
-        print("Cameras used:", cam_sources_present)
-        print("R =\n", R)
-        print("t =", t)
-        print("stats =", stats)
+        try:
+            U, _, Vt = np.linalg.svd(M)
+        except np.linalg.LinAlgError as e:
+            print(f"[{src}] SVD failed to converge: {e}")
+            continue
 
-        os.makedirs(os.path.dirname(SAVE_PATH), exist_ok=True)
-        np.savez(
-            SAVE_PATH,
-            R=R,
-            t=t,
-            stats=stats,
-            source="combined",
-            cameras_used=np.array(cam_sources_present, dtype=str),
-        )
-        print(f"Saved combined transform to {SAVE_PATH}")
-
-    except Exception as e:
-        print("[INFO] Combined fit failed, skipping save:", e)
-else:
-    print("\n[INFO] No cameras from CAMERA_SERIALS were found in this CSV; skipping combined fit.")
-
-
-# --- NEW: per-camera RANSAC + save one file per SN ---
-
-def fit_cam_ransac_and_save(cam_df, robot_df, src, tag_id=WORLD_TAG_ID):
-    """Run RANSAC for a single camera and save to cam_<SN>_to_robot_transform.npz."""
-    if cam_df.empty:
-        print(f"[{src}] no rows for this camera, skipping.")
-        return
-
-    cam_tag = cam_df[
-        (cam_df["event"] == "tag_pose_snapshot") &
-        (cam_df["tag_id"] == tag_id)
-    ]
-    if cam_tag.empty:
-        print(f"[{src}] no tag_pose_snapshot rows for tag_id={tag_id}, skipping.")
-        return
-
-    try:
-        R_cam, t_cam, stats_cam, inliers_cam = stack_and_fit_ransac(
-            [cam_df],
-            robot_df,
-            tag_id,
-            time_tol=TIME_TOL,
-            ransac_thresh=0.02,
-            max_iters=3000,
-            min_inliers_ratio=0.3,
-            random_state=42
-        )
-    except Exception as e:
-        print(f"[{src}] RANSAC failed: {e}")
-        return
-
-    print(f"\n=== RANSAC {src} -> Robot transform ===")
-    print("R =\n", R_cam)
-    print("t =", t_cam)
-    print("stats =", stats_cam)
-
-    save_path = f"data/DATA/hand_eye/cam_{src}_to_robot_transform.npz"
-    try:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        np.savez(
-            save_path,
-            R=R_cam,
-            t=t_cam,
-            stats=stats_cam,
-            source=src
-        )
-        print(f"Saved {src} transform to {save_path}")
-    except Exception as e:
-        print(f"[{src}] Skip save (error):", e)
-
-
-def fit_imu_rotation_and_save(imu_df, robot_df, src, tag_for_print="IMU"):
-    """
-    Estimate a single rotation R_cal such that:
-
-        R_robot_i  ≈  R_cal @ R_imu_i
-    """
-    if imu_df.empty:
-        print(f"[{tag_for_print} {src}] no rows for this source, skipping.")
-        return
-
-    required_cols = {"imu_yaw_deg", "imu_pitch_deg", "imu_roll_deg"}
-    if not required_cols.issubset(imu_df.columns):
-        missing = required_cols - set(imu_df.columns)
-        print(f"[{tag_for_print} {src}] missing columns {missing}, skipping.")
-        return
-
-    # Time-align IMU ↔ robot
-    m = nearest_merge_imu(imu_df, robot_df, tol=TIME_TOL)
-    if m.empty:
-        print(f"[{tag_for_print} {src}] no imu↔robot matches within {TIME_TOL}, skipping.")
-        return
-
-    # --- Build rotation pairs (R_robot_i, R_imu_i) ---
-    R_robot_list = []
-    R_imu_list = []
-
-    for _, row in m.iterrows():
-        # Robot rotation from pose_ij_rob
-        Rr = np.array([
-            [row["pose_00_rob"], row["pose_01_rob"], row["pose_02_rob"]],
-            [row["pose_10_rob"], row["pose_11_rob"], row["pose_12_rob"]],
-            [row["pose_20_rob"], row["pose_21_rob"], row["pose_22_rob"]],
-        ], dtype=float)
-
-        # IMU rotation matrix from yaw/pitch/roll (deg) in CSV
-        yaw = float(row["imu_yaw_deg"])
-        pitch = float(row["imu_pitch_deg"])
-        roll = float(row["imu_roll_deg"])
-        Ri = rpy_to_R_deg(yaw, pitch, roll)
-
-        R_robot_list.append(Rr)
-        R_imu_list.append(Ri)
-
-    if not R_robot_list:
-        print(f"[{tag_for_print} {src}] no valid IMU/robot orientation pairs, skipping.")
-        return
-
-    R_robot_arr = np.stack(R_robot_list, axis=0)  # (N,3,3)
-    R_imu_arr = np.stack(R_imu_list, axis=0)      # (N,3,3)
-
-    # --- Estimate R_cal via orthogonal Procrustes on rotations ---
-    # We want: R_robot ≈ R_cal @ R_imu  ⇒  R_cal ≈ argmin || R_cal R_imu - R_robot ||
-    M = np.zeros((3, 3), dtype=float)
-    for Rr, Ri in zip(R_robot_arr, R_imu_arr):
-        M += Rr @ Ri.T
-
-    U, _, Vt = np.linalg.svd(M)
-    R_cal = U @ Vt
-    if np.linalg.det(R_cal) < 0:
-        # Reflection fix
-        U[:, -1] *= -1
         R_cal = U @ Vt
+        if np.linalg.det(R_cal) < 0:
+            U[:, -1] *= -1
+            R_cal = U @ Vt
 
-    # --- Compute geodesic angle errors after applying R_cal ---
-    ang_errs = []
-    for Rr, Ri in zip(R_robot_arr, R_imu_arr):
-        R_imu_aligned = R_cal @ Ri
-        ang = rot_geodesic_angle_deg(Rr, R_imu_aligned)
-        ang_errs.append(ang)
+        print(f"\n=== IMU {src} -> Robot Orientation ===")
+        print(f"R_cal=\n{R_cal}")
 
-    ang_errs = np.asarray(ang_errs, dtype=float)
-    mean_ang = float(np.mean(ang_errs))
-    median_ang = float(np.median(ang_errs))
-    p95_ang = float(np.percentile(ang_errs, 95))
-    rms_ang = float(np.sqrt(np.mean(ang_errs ** 2)))
-    max_ang = float(np.max(ang_errs))
-
-    stats = {
-        "N_pairs": int(len(ang_errs)),
-        "mean_deg": mean_ang,
-        "median_deg": median_ang,
-        "p95_deg": p95_ang,
-        "rms_deg": rms_ang,
-        "max_deg": max_ang,
-    }
-
-    # Pretty printing
-    print("\n" + "=" * 72)
-    print(f"=== IMU '{src}' → Robot | Orientation-only Calibration ===")
-    print("=" * 72)
-    print("Estimated rotation (R_cal):")
-    print(R_cal)
-    print("\nAngle residual statistics (after applying R_cal):")
-    print(f"  Samples used      : {len(ang_errs)}")
-    print(f"  Mean error        : {mean_ang:.3f}°")
-    print(f"  Median error      : {median_ang:.3f}°")
-    print(f"  95th percentile   : {p95_ang:.3f}°")
-    print(f"  RMS error         : {rms_ang:.3f}°")
-    print(f"  Max error         : {max_ang:.3f}°")
+        save_path = os.path.join(SAVE_DIR, f"imu_{src}_to_robot_transform.npz")
+        np.savez(save_path, R=R_cal, t=np.zeros(3), source=src)
+        print(f"Saved to {save_path}")
 
 
-    # Save R_cal with dummy t=[0,0,0] for compatibility
-    save_path = f"data/DATA/hand_eye/imu_{src}_to_robot_transform.npz"
-    t_dummy = np.zeros(3, dtype=float)
-    try:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        np.savez(
-            save_path,
-            R=R_cal,
-            t=t_dummy,
-            stats=stats,
-            source=str(src),
-        )
-        print(f"[{tag_for_print} {src}] Saved orientation transform to {save_path}")
-    except Exception as e:
-        print(f"[{tag_for_print} {src}] Skip save (error):", e)
-
-# Find all sources
-all_sources = sorted(df["source"].unique())
-
-# Cameras: anything that's not robot and not an IMU
-camera_sources = [
-    s for s in all_sources
-    if s != "robot" and not str(s).lower().startswith("imu")
-]
-
-# IMUs: sources whose name starts with "imu" (e.g. "imu", "imu_vn100", etc.)
-imu_sources = [
-    s for s in all_sources
-    if str(s).lower().startswith("imu")
-]
-
-# --- Per-camera RANSAC (unchanged behavior) ---
-for src in camera_sources:
-    cam_df = df[df["source"] == src]
-    fit_cam_ransac_and_save(cam_df, robot, src)
-
-# --- IMU orientation calibration ---
-for src in imu_sources:
-    imu_df = df[df["source"] == src]
-    fit_imu_rotation_and_save(imu_df, robot, src)
+if __name__ == "__main__":
+    main()

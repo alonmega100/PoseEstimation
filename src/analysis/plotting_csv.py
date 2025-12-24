@@ -1,349 +1,107 @@
 #!/usr/bin/env python3
 import csv
-import json
-import ast
 import argparse
 import numpy as np
 import plotly.graph_objects as go
-import re
 import os
-import glob
-
-from pathlib import Path
-from typing import Dict, Any, List, Tuple
-from src.utils.tools import apply_rt_to_camera_points, apply_rt_to_camera_points_per_cam, moving_average
-
-
-# -----------------------------------------------------------
-# Helpers for finding latest CSV or NPZ
-# -----------------------------------------------------------
-def _find_latest_csv(pattern: str = "data/CSV/session_log_*.csv") -> str | None:
-    files = glob.glob(pattern)
-    if not files:
-        return None
-    return max(files, key=os.path.getmtime)
+from src.utils.tools import (
+    load_cam_to_robot_transforms, choose_csv_interactively,
+    moving_average, find_latest_csv
+)
 
 
-def _find_default_transform(pattern: str = "data/DATA/hand_eye/*.npz") -> str | None:
-    files = glob.glob(pattern)
-    if not files:
-        return None
-    return max(files, key=os.path.getmtime)
-
-
-def _find_cam_transform(src: str, directory: str = "data/DATA/hand_eye") -> str | None:
-    """
-    Look for a per-camera transform file:
-        <directory>/cam_<SRC>_to_robot_transform.npz
-    """
-    path = os.path.join(directory, f"cam_{src}_to_robot_transform.npz")
-    return path if os.path.exists(path) else None
-
-
-# -----------------------------------------------------------
-# Parsing helpers
-# -----------------------------------------------------------
-def parse_data_cell(s: str):
-    if not s:
-        return {}
-    s = s.strip()
-    try:
-        return json.loads(s)
-    except Exception:
-        pass
-    try:
-        return ast.literal_eval(s)
-    except Exception:
-        pass
-    text = re.sub(r'\barray\(', '', s)
-    text = re.sub(r',\s*dtype=[^)]+', '', text)
-    text = text.replace('])', ']')
-    try:
-        return ast.literal_eval(text)
-    except Exception:
-        return {}
-
-
-POSE_COLS = [f"pose_{r}{c}" for r in range(4) for c in range(4)]
-
-
-def _row_has_flat_pose(row: Dict[str, str]) -> bool:
-    return all(col in row and row[col] not in (None, "", "null", "None") for col in POSE_COLS)
-
-
-def _flat_pose_from_row(row: Dict[str, str]) -> np.ndarray:
-    vals = [float(row[f"pose_{r}{c}"]) for r in range(4) for c in range(4)]
-    return np.array(vals, dtype=float).reshape(4, 4)
-
-
-# -----------------------------------------------------------
-# Extract points from CSV
-# -----------------------------------------------------------
-def extract_points(csv_path: str):
+def extract_points(csv_path):
     points = []
-    with open(csv_path, "r", newline="") as f:
+    with open(csv_path, "r") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            src = (row.get("source") or "").strip()
-            evt = (row.get("event") or "").strip()
-            ts = (row.get("timestamp") or "").strip()
+            src = row.get("source", "").strip()
+            ts = row.get("timestamp")
 
-            # Robot / camera rows that contain a flattened 4×4 pose_ij
-            if _row_has_flat_pose(row):
-                H = _flat_pose_from_row(row)
-                x, y, z = float(H[0, 3]), float(H[1, 3]), float(H[2, 3])
-                tag_id = (row.get("tag_id") or "").strip() or None
-                kind = "camera" if evt == "tag_pose_snapshot" or (src and src.lower() != "robot") else "robot"
-                points.append(
-                    dict(
-                        timestamp=ts,
-                        source=src,
-                        kind=kind,
-                        event=evt,
-                        tag_id=tag_id,
-                        x=x,
-                        y=y,
-                        z=z,
-                    )
-                )
-
-            # IMU rows: use integrated position imu_x/imu_y/imu_z
-            elif src == "imu":
-                x_str = row.get("imu_x", "")
-                y_str = row.get("imu_y", "")
-                z_str = row.get("imu_z", "")
-                if not x_str or not y_str or not z_str:
-                    continue
-                try:
-                    x = float(x_str)
-                    y = float(y_str)
-                    z = float(z_str)
-                except Exception:
-                    # skip malformed IMU row
-                    continue
-
-                points.append(
-                    dict(
-                        timestamp=ts,
-                        source=src,
-                        kind="imu",
-                        event=evt,
-                        tag_id=None,
-                        x=x,
-                        y=y,
-                        z=z,
-                    )
-                )
+            # IMU
+            if src == "imu" and row.get("imu_x"):
+                points.append({
+                    "kind": "imu", "source": src, "timestamp": ts,
+                    "x": float(row["imu_x"]), "y": float(row["imu_y"]), "z": float(row["imu_z"])
+                })
+            # Pose (Robot or Camera)
+            elif "pose_03" in row and row["pose_03"]:
+                kind = "robot" if src == "robot" else "camera"
+                points.append({
+                    "kind": kind, "source": src, "timestamp": ts,
+                    "x": float(row["pose_03"]), "y": float(row["pose_13"]), "z": float(row["pose_23"])
+                })
     return points
 
 
-# -----------------------------------------------------------
-# Plotting
-# -----------------------------------------------------------
-def build_figure(points: List[Dict[str, Any]],
-                 connect_robot: bool = True,
-                 connect_cameras: bool = False,
-                 group_by_tag: bool = False) -> go.Figure:
-    fig = go.Figure()
-    if not points:
-        fig.update_layout(title="No pose data found")
-        return fig
-    for i, p in enumerate(points):
-        p["_idx"] = i
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--csv")
+    parser.add_argument("--transform-dir", default="data/DATA/hand_eye")
+    parser.add_argument("--imu-smoothing", type=int, default=1)
+    args = parser.parse_args()
 
-    robots = [p for p in points if p["kind"] == "robot"]
+    # 1. Select CSV
+    if args.csv:
+        csv_path = args.csv
+    else:
+        # Fallback to latest auto or interactive?
+        # For plotting, users often want the last run.
+        csv_path = find_latest_csv("data/CSV") or choose_csv_interactively("data/CSV")
+
+    print(f"Plotting: {csv_path}")
+    points = extract_points(csv_path)
+
+    # 2. Smooth IMU
+    if args.imu_smoothing > 1:
+        imus = [p for p in points if p["kind"] == "imu"]
+        if imus:
+            smooth_x = moving_average([p["x"] for p in imus], args.imu_smoothing)
+            smooth_y = moving_average([p["y"] for p in imus], args.imu_smoothing)
+            smooth_z = moving_average([p["z"] for p in imus], args.imu_smoothing)
+            for i, p in enumerate(imus):
+                p["x"], p["y"], p["z"] = smooth_x[i], smooth_y[i], smooth_z[i]
+
+    # 3. Transform Cameras
     cams = [p for p in points if p["kind"] == "camera"]
-    cams_aligned = [p for p in points if p["kind"] == "camera_aligned"]
-    imus = [p for p in points if p["kind"] == "imu"]
+    cam_ids = list(set(p["source"] for p in cams))
+    transforms = load_cam_to_robot_transforms(None, args.transform_dir, cam_ids)
 
-    def color_for(i):
-        colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
-                  "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
-                  "#bcbd22", "#17becf"]
-        return colors[i % len(colors)]
+    aligned_points = []
+    for p in cams:
+        if p["source"] in transforms:
+            T = transforms[p["source"]]
+            v = np.array([p["x"], p["y"], p["z"], 1.0])
+            v_new = T @ v
+            new_p = p.copy()
+            new_p["kind"] = "camera_aligned"
+            new_p["x"], new_p["y"], new_p["z"] = v_new[0], v_new[1], v_new[2]
+            aligned_points.append(new_p)
 
-    if robots:
-        rs = sorted(robots, key=lambda p: p["_idx"])
-        fig.add_trace(go.Scatter3d(
-            x=[p["x"] for p in rs], y=[p["y"] for p in rs], z=[p["z"] for p in rs],
-            mode="markers+lines" if connect_robot else "markers",
-            marker=dict(size=4), line=dict(width=2), name="Robot",
-            # UPDATED: Pass timestamps to customdata and use them in hovertemplate
-            customdata=[p["timestamp"] for p in rs],
-            hovertemplate="x=%{x:.3f}<br>y=%{y:.3f}<br>z=%{z:.3f}<br>t=%{customdata}<extra>Robot</extra>"
-        ))
+    points.extend(aligned_points)
 
-    def add_traces(data, label_suffix: str = "", size: int = 3, offset: int = 0, base_label: str = "Camera"):
-        by_src = {}
-        for p in data:
-            by_src.setdefault(p["source"], []).append(p)
-        for i, (src, pts) in enumerate(by_src.items()):
-            color = color_for(i + offset)
-            pts = sorted(pts, key=lambda p: p["_idx"])
+    # 4. Plot (Simplified)
+    fig = go.Figure()
+
+    def add_trace(kind, color, size=3):
+        subset = [p for p in points if p["kind"] == kind]
+        if not subset: return
+        # Group by source
+        sources = set(p["source"] for p in subset)
+        for src in sources:
+            data = [p for p in subset if p["source"] == src]
             fig.add_trace(go.Scatter3d(
-                x=[p["x"] for p in pts],
-                y=[p["y"] for p in pts],
-                z=[p["z"] for p in pts],
-                mode="markers+lines" if connect_cameras else "markers",
-                marker=dict(size=size, color=color),
-                line=dict(width=2, color=color),
-                name=f"{base_label} {src}{label_suffix}",
-                # UPDATED: Pass timestamps to customdata and use them in hovertemplate
-                customdata=[p["timestamp"] for p in pts],
-                hovertemplate="x=%{x:.3f}<br>y=%{y:.3f}<br>z=%{z:.3f}<br>t=%{customdata}<extra>%{fullData.name}</extra>"
+                x=[p["x"] for p in data], y=[p["y"] for p in data], z=[p["z"] for p in data],
+                mode="markers", marker=dict(size=size, color=color),
+                name=f"{kind} ({src})"
             ))
 
-    # Cameras (raw and aligned)
-    add_traces(cams, base_label="Camera")
-    add_traces(cams_aligned, " (aligned)", size=4, offset=5, base_label="Camera")
+    add_trace("robot", "black", 4)
+    add_trace("camera", "red", 2)
+    add_trace("camera_aligned", "green", 3)
+    add_trace("imu", "blue", 2)
 
-    # IMU integrated trajectory (snaps to object tag every few seconds)
-    if imus:
-        add_traces(imus, label_suffix=" (IMU)", size=4, offset=10, base_label="IMU")
-
-    fig.update_layout(
-        scene=dict(aspectmode="data"),
-        title="3D Robot, Camera & IMU Observations",
-        margin=dict(l=0, r=0, b=0, t=40),
-    )
-
-    return fig
-# -----------------------------------------------------------
-# Main CLI
-# -----------------------------------------------------------
-def main():
-    ap = argparse.ArgumentParser(description="Plot 3D robot & camera observations from session log CSV")
-    ap.add_argument("--csv", help="Path to session_log_*.csv (defaults to latest CSV in data/CSV/)")
-    ap.add_argument(
-        "--transform",
-        help="Path to NPZ transform (single transform for all cameras; "
-             "if omitted, try per-camera transforms in --transform-dir)"
-    )
-    ap.add_argument(
-        "--transform-dir",
-        default="data/DATA/hand_eye",
-        help="Directory containing per-camera transforms named "
-             "cam_<SOURCE>_to_robot_transform.npz (default: data/DATA/hand_eye)"
-    )
-    ap.add_argument("--only-aligned", action="store_true", help="Plot only aligned camera traces")
-    ap.add_argument("--group-by-tag", action="store_true", default=True)
-    ap.add_argument("--robot-lines", action="store_true", default=True)
-    ap.add_argument("--camera-lines", action="store_true", default=True)
-    # UPDATED: Argument to control smoothing window
-    ap.add_argument("--imu-smoothing", type=int, default=1,
-                    help="Window size for IMU moving average (default: 10). Set to 1 to disable.")
-
-    args = ap.parse_args()
-
-    # Auto-select latest CSV
-    csv_path = args.csv or _find_latest_csv()
-    if not csv_path:
-        print("No CSV found in data/CSV/. Exiting.")
-        return
-    print(f"Using CSV: {csv_path}")
-
-    # Load points
-    points = extract_points(csv_path)
-    print(f"Loaded {len(points)} poses from {Path(csv_path).name}")
-
-    # ---------------------------
-    # UPDATED: IMU Smoothing Logic
-    # ---------------------------
-    if args.imu_smoothing > 1:
-        imu_points = [p for p in points if p["kind"] == "imu"]
-        if imu_points:
-            print(f"Applying moving average (window={args.imu_smoothing}) to {len(imu_points)} IMU points.")
-
-            # Extract raw coordinate lists
-            xs = [p["x"] for p in imu_points]
-            ys = [p["y"] for p in imu_points]
-            zs = [p["z"] for p in imu_points]
-
-            # Compute moving averages (returns NaN for the first window-1 elements)
-            sm_x = moving_average(xs, args.imu_smoothing)
-            sm_y = moving_average(ys, args.imu_smoothing)
-            sm_z = moving_average(zs, args.imu_smoothing)
-
-            # Update the points in-place
-            for i, p in enumerate(imu_points):
-                p["x"] = sm_x[i]
-                p["y"] = sm_y[i]
-                p["z"] = sm_z[i]
-        else:
-            print("No IMU points found to smooth.")
-
-    # ---------------------------
-    # Transform logic
-    # ---------------------------
-
-    # Case 1: user explicitly gave a global transform -> old behavior
-    if args.transform:
-        transform_path = args.transform
-        print(f"Using global transform for all cameras: {transform_path}")
-        try:
-            rt = np.load(transform_path, allow_pickle=True)
-            R, t = rt["R"], rt["t"]
-            aligned = apply_rt_to_camera_points(
-                [p for p in points if p["kind"] == "camera"], R, t)
-            points = ([p for p in points if p["kind"] != "camera"] + aligned
-                      if args.only_aligned else points + aligned)
-            print("Applied global R,t transform to all cameras.")
-        except Exception as e:
-            print(f"Failed to load transform {transform_path}: {e}")
-
-    else:
-        # Case 2: per-camera transforms based on source
-        cam_sources = sorted(
-            {p["source"] for p in points if p["kind"] == "camera" and p.get("source")}
-        )
-
-        rt_by_source: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
-        if cam_sources:
-            print("Looking for per-camera transforms in:", args.transform_dir)
-        for src in cam_sources:
-            path = _find_cam_transform(src, args.transform_dir)
-            if not path:
-                print(f"  - No transform found for camera {src}")
-                continue
-            try:
-                rt = np.load(path, allow_pickle=True)
-                R, t = rt["R"], rt["t"]
-                rt_by_source[src] = (R, t)
-                print(f"  - Using transform for camera {src}: {path}")
-            except Exception as e:
-                print(f"  - Failed to load transform for camera {src} ({path}): {e}")
-
-        if rt_by_source:
-            aligned = apply_rt_to_camera_points_per_cam(
-                [p for p in points if p["kind"] == "camera"],
-                rt_by_source
-            )
-            points = ([p for p in points if p["kind"] != "camera"] + aligned
-                      if args.only_aligned else points + aligned)
-            print(f"Applied per-camera transforms to {len(rt_by_source)} cameras.")
-        else:
-            # Fallback: try old default global transform if it exists
-            transform_path = _find_default_transform()
-            if transform_path:
-                print(f"No per-camera transforms found. Using default global transform: {transform_path}")
-                try:
-                    rt = np.load(transform_path, allow_pickle=True)
-                    R, t = rt["R"], rt["t"]
-                    aligned = apply_rt_to_camera_points(
-                        [p for p in points if p["kind"] == "camera"], R, t)
-                    points = ([p for p in points if p["kind"] != "camera"] + aligned
-                              if args.only_aligned else points + aligned)
-                    print("Applied global R,t transform to all cameras (fallback).")
-                except Exception as e:
-                    print(f"Failed to load default transform {transform_path}: {e}")
-            else:
-                print("No per-camera transforms and no global transform found. Plotting raw camera poses only.")
-
-    # Build & save plot
-    fig = build_figure(points, args.robot_lines, args.camera_lines, args.group_by_tag)
-    html_path = Path(csv_path).with_suffix(".html")
-    fig.write_html(html_path)
-    print(f"Saved interactive HTML to {html_path}")
+    fig.update_layout(scene=dict(aspectmode="data"), title=f"Session: {os.path.basename(csv_path)}")
     fig.show()
 
 
