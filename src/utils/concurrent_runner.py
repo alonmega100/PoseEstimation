@@ -23,11 +23,6 @@ from src.imu.imu_reader import IMUReader
 # Config
 # -------------------------------------------------
 
-
-IMU_CORRECTION_INTERVAL = 3.0  # seconds; how often to "snap" IMU to camera tag
-IMU_CORRECTION_ZERO_VEL = True  # zero IMU velocity at correction
-IMU_CORRECTION_TAG_ID = 2  # which tag to use as the ground-truth position
-
 TARGET_LOG_HZ = 30.0  # robot logger rate
 LOG_INTERVAL = 1.0 / TARGET_LOG_HZ
 NUM_OF_COMMANDS_TO_GENERATE = 20
@@ -66,29 +61,22 @@ def command_writer_thread(
 ):
     logging.info("Command writer started")
     list_of_movements = list_of_movements_generator(NUM_OF_COMMANDS_TO_GENERATE)
-    ###### Using the following line to override the command queue to get a reapeating experiment  ######
-    # list_of_movements = ['y 0.2 z -0.1', 'x 0.1 y -0.2', 'y 0.2', 'x -0.1', 'x 0.1', 'y -0.2', 'x -0.1', 'x 0.1', 'y 0.2', 'y -0.1', 'x -0.2', 'y -0.1', 'y 0.2', 'x 0.1 y -0.2', 'x 0.1 y 0.1', 'z 0.1', 'y 0.1 z -0.1', 'y -0.1 z 0.1', 'x -0.1', 'x -0.1 y -0.1']
-    ######   ######
+    # list_of_movements = ['y 0.2 z -0.1', 'x 0.1 y -0.2'] # Override for repeating experiment
+
     print(list_of_movements)
     while not stop_event.is_set():
         try:
             print("Type command (q=quit): ")
-
             i, o, e = select.select([sys.stdin], [], [], 2)
 
             if i:
-                # User typed something
                 cmd = sys.stdin.readline().strip()
             else:
-                # Auto mode: take from pre-generated list
                 try:
                     cmd = list_of_movements.pop(0).strip()
                 except IndexError:
-                    # No more commands to send -> tell the robot thread
                     print("List of commands is empty. No more commands will be sent.")
                     no_more_commands_event.set()
-                    # We don't set stop_event here; robot thread will stop
-                    # once it has finished all queued moves.
                     break
 
             print("Command received: {}".format(cmd))
@@ -96,15 +84,11 @@ def command_writer_thread(
             if not cmd:
                 continue
 
-            # Manual abort (user typed q/quit/exit)
             if cmd in ("q", "quit", "exit"):
                 stop_event.set()
                 break
 
-            # everything else goes to the robot as move
             try:
-                print("putting the toopel", cmd)
-
                 command_queues["robot"].put_nowait(("move", cmd))
             except queue.Full:
                 logging.warning("Queue full for robot; drop 'move'")
@@ -128,28 +112,22 @@ def robot_move_thread(
         no_more_commands_event: threading.Event,
 ):
     logging.info("Robot MOVE thread started")
-    #    --- Manual Initialization ---
 
     updated_H, valid = controller.pos_command_to_H("yaw 20 -z 0.15")
-
     controller.robot.move_to_pose(updated_H, speed_factor=controller.speed_factor)
 
-    #  --- End of Initialization ---
     while not stop_event.is_set():
         try:
             move_cmds = []
-            # drain robot queue
             while True:
                 try:
                     cmd_type, payload = command_queues["robot"].get_nowait()
-                    print("got this gem:", cmd_type, payload)
                 except queue.Empty:
                     break
 
                 if cmd_type == "move":
                     move_cmds.append(payload)
 
-            # run moves (may block)
             for raw in move_cmds:
                 raw = raw or ""
                 try:
@@ -161,7 +139,7 @@ def robot_move_thread(
 
                 if valid and updated_H is not None:
                     try:
-                        controller.robot.move_to_pose(updated_H,speed_factor=controller.speed_factor)  #, speed_factor=DEFAULT_SPEED_FACTOR)
+                        controller.robot.move_to_pose(updated_H, speed_factor=controller.speed_factor)
                     except Exception as e:
                         logging.error(f"move_to_pose failed: {e}")
 
@@ -183,14 +161,14 @@ def robot_move_thread(
 
 
 # -------------------------------------------------
-# Robot LOGGER thread (runs at fixed rate, dumps everything)
+# Robot LOGGER thread
 # -------------------------------------------------
 def robot_logger_thread(
         controller: PandaController,
         stop_event: threading.Event,
         log_event,
         discard: bool,
-        writer: Optional["HDF5Writer"],  # may be None when discard=True
+        writer: Optional["HDF5Writer"],
         hz: float = 30.0,
 ):
     logging.info("Robot LOGGER thread started")
@@ -199,7 +177,6 @@ def robot_logger_thread(
     while not stop_event.is_set():
         start_t = time.time()
         try:
-            # grab robot state regardless of motion
             if hasattr(controller, "get_state_raw"):
                 state = controller.get_state_raw()
             else:
@@ -208,27 +185,16 @@ def robot_logger_thread(
             H = controller.robot.get_pose()
             t = time.time()
             if writer is not None:
-                # ---- 1) push to HDF5
                 try:
-                    writer.add_robot_data(
-                        state.q,
-                        state.dq,
-                        np.zeros(6),
-                        state.tau_J,
-                        H,
-                        t
-                    )
+                    writer.add_robot_data(state.q, state.dq, np.zeros(6), state.tau_J, H, t)
                 except Exception as e:
                     logging.error(f"Robot logger: failed to add robot data: {e}")
 
-            # ---- 2) push to CSV (make everything jsonable)
             if not discard:
                 def to_list(x):
-                    if isinstance(x, np.ndarray):
-                        return x.tolist()
-                    if hasattr(x, "tolist"):
-                        return x.tolist()
-                    return list(x)  # assume iterable
+                    if isinstance(x, np.ndarray): return x.tolist()
+                    if hasattr(x, "tolist"): return x.tolist()
+                    return list(x)
 
                 log_event(
                     "robot",
@@ -241,7 +207,6 @@ def robot_logger_thread(
                     },
                 )
 
-            # update shared pose
             with state_lock:
                 shared_state["robot_pose_R"] = H
 
@@ -257,7 +222,6 @@ def robot_logger_thread(
 
 # -------------------------------------------------
 # Vision (AprilTag) threads
-#   log every frame
 # -------------------------------------------------
 def vision_processing_thread(
         serial_num: str,
@@ -283,7 +247,6 @@ def vision_processing_thread(
                     shared_state["vision_image"][serial_num] = vis_img
                     shared_state["tag_pose_by_cam"][serial_num] = H0i_dict
 
-                # log this frame’s tag poses (even if identical)
                 if not discard:
                     log_event(serial_num, "tag_pose_snapshot", {"pose": H0i_dict})
                     with state_lock:
@@ -309,90 +272,33 @@ def vision_processing_thread(
         logging.info(f"Vision processing exiting for {serial_num}")
 
 
+# -------------------------------------------------
+# IMU thread (CLEARED: Raw logging only)
+# -------------------------------------------------
 def imu_thread(
         stop_event: threading.Event,
         log_event,
         discard: bool,
         imu_reader: IMUReader,
-        correction_interval: float = IMU_CORRECTION_INTERVAL,
 ):
     """
-    Poll IMUReader.get_latest(), log samples, and periodically snap the
-    integrated IMU position to the current OBJECT TAG pose estimated by
-    the cameras.
-
-    The world tag still defines the global origin for the cameras, but
-    the IMU "follows" the object tag: every `correction_interval` seconds
-    we take the latest object-tag pose from `shared_state["tag_pose_A"]`
-    and set the IMU position to that translation.
+    Poll IMUReader.get_latest() and log samples.
+    No drift correction, no position snapping, no gravity cleaning logic here.
     """
-    # Defensive check: if imu_reader is None, exit gracefully
     if imu_reader is None:
         logging.warning("IMU thread: imu_reader is None, exiting immediately")
         return
 
-    logging.info("IMU thread started")
+    logging.info("IMU thread started (Logging Yaw, Pitch, Roll, Accel)")
     backoff = 0.01
-    last_correction_wall = time.time()
-
-    # helper to fetch the latest object-tag pose from shared_state
-    def _get_object_tag_position():
-        with state_lock:
-            tag_dict = dict(shared_state.get("tag_pose_A", {}))
-
-        if not tag_dict:
-            return None
-
-        # OBJ_TAG_IDS may be a list/tuple or a single id
-        if isinstance(OBJ_TAG_IDS, (list, tuple, set)):
-            candidate_ids = list(OBJ_TAG_IDS)
-        else:
-            candidate_ids = [OBJ_TAG_IDS]
-
-        H_obj = None
-        for cid in candidate_ids:
-            # try both raw key and stringified key
-            if cid in tag_dict:
-                H_obj = tag_dict[cid]
-                break
-            scid = str(cid)
-            if scid in tag_dict:
-                H_obj = tag_dict[scid]
-                break
-
-        if H_obj is None or not is_4x4_matrix(H_obj):
-            return None
-
-        H = np.array(H_obj, dtype=float)
-        return H[:3, 3]  # (x,y,z)
 
     try:
         while not stop_event.is_set():
             try:
-                # 1) Log latest IMU sample for CSV / HDF5
+                # Log latest IMU sample for CSV / HDF5
                 sample = imu_reader.get_latest()
                 if sample is not None and not discard:
                     log_event("imu", "imu_sample", sample)
-
-                # 2) Periodic drift correction using object tag pose
-                if correction_interval is not None and correction_interval > 0.0:
-                    now = time.time()
-                    if now - last_correction_wall >= correction_interval:
-                        pos_obj = _get_object_tag_position()
-                        if pos_obj is not None:
-                            # Optionally keep current velocity, or zero it.
-                            if IMU_CORRECTION_ZERO_VEL:
-                                vel = (0.0, 0.0, 0.0)
-                            else:
-                                vel = None
-                                if sample is not None:
-                                    vel = sample.get("vel_m_s")
-                                if vel is None:
-                                    vel = (0.0, 0.0, 0.0)
-
-                            imu_reader.set_position(pos_obj, vel)
-                            logging.debug(f"IMU correction: snapping to object tag at {pos_obj}")
-                            last_correction_wall = now
 
                 time.sleep(0.01)
                 backoff = 0.01
@@ -423,19 +329,14 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     except Exception as e:
         logging.warning(f"Failed to start IMUReader: {e}")
 
-    # make dirs
     os.makedirs("../../data/DATA", exist_ok=True)
     os.makedirs("../../data/CSV", exist_ok=True)
     writer = None
     if not discard:
-        # HDF5 writer
         writer = HDF5Writer("../../data/DATA/session.h5", "session")
         writer.start()
         run_id = datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
         writer.add_run(run_id, force=0, dx=0, dy=0, angle=0)
-
-        # you said: "if a vision thread is running -> we get a camera log every frame"
-        # so we just keep writer on
         writer.start_writing()
         writer.to_file_enabled = True
 
@@ -468,7 +369,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
         daemon=True,
     )
 
-    # vision threads (now log every frame)
+    # vision threads
     vision_threads = [
         threading.Thread(
             target=vision_processing_thread,
@@ -490,12 +391,13 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
     # start all
     robot_move_t.start()
     robot_log_t.start()
-    # IMU thread (only if imu_reader was successfully initialized)
+
+    # IMU thread - Updated signature (no correction_interval)
     if imu_reader is not None:
         imu_t = threading.Thread(
             target=imu_thread,
             name="IMU",
-            args=(stop_event, log_event, discard, imu_reader, IMU_CORRECTION_INTERVAL),
+            args=(stop_event, log_event, discard, imu_reader),
             daemon=True,
         )
         imu_t.start()
@@ -509,19 +411,16 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
 
     try:
         while not stop_event.is_set():
-            # Get latest images from all cameras
             with state_lock:
                 images = {sn: shared_state["vision_image"].get(sn) for sn in CAMERA_SERIALS}
                 tag_by_cam = {sn: shared_state.get("tag_pose_by_cam", {}).get(sn, {}) for sn in CAMERA_SERIALS}
 
-            # Update display with all available images
             for sn, img in images.items():
                 if img is not None:
                     tags = tag_by_cam.get(sn) or {}
                     overlay = [f"tags: {len(tags)}"]
                     display.update_frame(sn, img, overlay_text=overlay)
 
-            # Show mosaic
             if not display.show_mosaic():
                 stop_event.set()
                 break
@@ -532,11 +431,9 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
         logging.info("Shutting down...")
         stop_event.set()
 
-        # Cleanup display
         if display:
             display.cleanup()
 
-        # STEP 1: Wait for robot threads (usually fast)
         robot_move_t.join(timeout=2.0)
         robot_log_t.join(timeout=2.0)
 
@@ -566,10 +463,8 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                     ev = entry.get("event")
                     data = entry.get("data", {})
 
-                    # robot rows with full state
                     if src == "robot" and isinstance(data, dict) and "pose" in data:
                         flat_pose = matrix_to_flat_dict("pose", data["pose"])
-                        # dump the rest to raw_data
                         extras = data.copy()
                         extras.pop("pose", None)
                         rows_to_write.append({
@@ -581,7 +476,6 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                         })
                         continue
 
-                    # camera: multi-tag dict
                     if isinstance(data, dict) and "pose" in data and isinstance(data["pose"], dict):
                         for tag_id, mat in data["pose"].items():
                             if is_4x4_matrix(mat):
@@ -605,41 +499,32 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                                 })
                         continue
 
-                    # single pose (rare here)
-                    if isinstance(data, dict) and "pose" in data and is_4x4_matrix(data["pose"]):
-                        flat_pose = matrix_to_flat_dict("pose", data["pose"])
-                        rows_to_write.append({
-                            "timestamp": ts,
-                            "source": src,
-                            "event": ev,
-                            **flat_pose
-                        })
-                        continue
-
-                    # IMU samples -> flatten key fields for CSV
+                    # IMU samples -> LOG ORIENTATION AND ACCELERATION ONLY
                     if src == "imu" and isinstance(data, dict):
-                        pos = data.get("pos_m") or (None, None, None)
-                        vel = data.get("vel_m_s") or (None, None, None)
                         yaw = data.get("yaw_deg")
                         pitch = data.get("pitch_deg")
                         roll = data.get("roll_deg")
+
+                        # Trying to find acceleration.
+                        # Assumes key is 'accel'. Adjust this if your dict uses 'accel_m_s2' or similar.
+                        acc = data.get("accel")
+                        if acc is None:
+                            # Fallback: try separate keys if tuple not found
+                            acc = (data.get("acc_x"), data.get("acc_y"), data.get("acc_z"))
+
                         rows_to_write.append({
                             "timestamp": ts,
                             "source": src,
                             "event": ev,
                             "raw_data": json.dumps(data),
-                            "imu_x": float(pos[0]) if pos and pos[0] is not None else "",
-                            "imu_y": float(pos[1]) if pos and pos[1] is not None else "",
-                            "imu_z": float(pos[2]) if pos and pos[2] is not None else "",
                             "imu_yaw_deg": float(yaw) if yaw is not None else "",
                             "imu_pitch_deg": float(pitch) if pitch is not None else "",
                             "imu_roll_deg": float(roll) if roll is not None else "",
-                            "imu_vx": float(vel[0]) if vel and vel[0] is not None else "",
-                            "imu_vy": float(vel[1]) if vel and vel[1] is not None else "",
-                            "imu_vz": float(vel[2]) if vel and vel[2] is not None else "",
+                            "imu_acc_x": float(acc[0]) if acc and acc[0] is not None else "",
+                            "imu_acc_y": float(acc[1]) if acc and acc[1] is not None else "",
+                            "imu_acc_z": float(acc[2]) if acc and acc[2] is not None else "",
                         })
                     else:
-                        # fallback
                         safe_data = data
                         if isinstance(safe_data, np.ndarray):
                             safe_data = safe_data.tolist()
@@ -650,11 +535,10 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                             "raw_data": json.dumps(safe_data) if safe_data else ""
                         })
 
-            # add imu flat columns for easier analysis
+            # UPDATED IMU COLUMNS
             IMU_COLS = [
-                "imu_x", "imu_y", "imu_z",
                 "imu_yaw_deg", "imu_pitch_deg", "imu_roll_deg",
-                "imu_vx", "imu_vy", "imu_vz",
+                "imu_acc_x", "imu_acc_y", "imu_acc_z"
             ]
             fieldnames = ["timestamp", "source", "event", "tag_id", "raw_data"] + IMU_COLS + POSE_COLS
             try:
@@ -667,16 +551,14 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
             except Exception as e:
                 logging.error(f"Failed to save run logs: {e}")
 
-        # close HDF5
         if writer is not None:
             try:
                 writer.stop()
             except Exception as e:
                 logging.error(f"Failed to stop HDF5 writer: {e}")
 
-        # Clean up OpenCV windows safely
         try:
             cv2.destroyAllWindows()
-            cv2.waitKey(1)  # Give OpenCV a moment to process the destroy event
+            cv2.waitKey(1)
         except Exception as e:
             logging.warning(f"OpenCV cleanup failed (non-fatal): {e}")

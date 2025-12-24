@@ -16,34 +16,31 @@ while True:
         break
     time.sleep(0.01)
 
+print("Recording 100 samples (Raw YPR + Accel)...")
+
 for i in range(100):
     imu_sample = imu.get_latest()
+
     if imu_sample is not None and isinstance(imu_sample, dict):
         imu_t = imu_sample.get("t_sec", float("nan"))
         imu_yaw = imu_sample.get("yaw_deg", float("nan"))
         imu_pitch = imu_sample.get("pitch_deg", float("nan"))
         imu_roll = imu_sample.get("roll_deg", float("nan"))
-        acc_body = imu_sample.get("acc_body", None) # I added this line
-        acc_world = imu_sample.get("acc_world_m_s2", None)            # (ax,ay,az) in world frame or None
-        vel = imu_sample.get("vel_m_s", (float("nan"),)*3)     # (vx,vy,vz)
-        pos = imu_sample.get("pos_m", (float("nan"),)*3)       # (x,y,z)
+
+        # 'accel' contains the raw body acceleration (ax, ay, az)
+        accel = imu_sample.get("accel", None)
     else:
         imu_t = imu_yaw = imu_pitch = imu_roll = float("nan")
-        acc_world = None
-        acc_body = None
-        vel = pos = (float("nan"),)*3
+        accel = None
 
     row = {
         "imu_t": imu_t,
         "imu_yaw_deg": imu_yaw,
         "imu_pitch_deg": imu_pitch,
         "imu_roll_deg": imu_roll,
-        "acc_body": acc_body,
-        "acc_world_m_s2": acc_world,
-        "vel_m_s": vel,
-        "pos_m": pos,
+        "accel": accel,
     }
     print(row)
-    time.sleep(0.02)  # ~50 Hz read, matches IMU poll rate
+    time.sleep(0.02)  # ~50 Hz read
 
 imu.stop()
