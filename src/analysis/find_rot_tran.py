@@ -14,11 +14,11 @@ RANSAC_ITERATIONS = 1000
 RANSAC_THRESHOLD = 0.02  # 2cm threshold for inliers
 TIME_SYNC_TOLERANCE = 0.1  # 100ms max diff
 CSV_FILE_PATH = "data/CSV/session_log_20251224_155001.csv"
-CALIBRATION_OUTPUT_FILE = "calibration.json"
+CALIBRATION_DIR = "data/DATA/hand_eye"
 
 
 # ---------------------------------------------------------
-# Helper Functions (Same as before)
+# Helper Functions
 # ---------------------------------------------------------
 
 def load_data(csv_path):
@@ -132,9 +132,9 @@ def main():
     print(f"Loading data from {CSV_FILE_PATH}...")
     robot_data, camera_data_dict = load_data(CSV_FILE_PATH)
 
-    calibration_results = {}
-
-    print(f"Loaded {len(robot_data)} robot poses. Running calibration...")
+    # Ensure output directory exists
+    os.makedirs(CALIBRATION_DIR, exist_ok=True)
+    print(f"Loaded {len(robot_data)} robot poses. Output dir: {CALIBRATION_DIR}")
 
     for serial in CAMERA_SERIALS:
         cam_list = camera_data_dict.get(serial, [])
@@ -160,21 +160,16 @@ def main():
             H[:3, :3] = R_est
             H[:3, 3] = t_est
 
-            # Save to dictionary (as list for JSON serialization)
-            calibration_results[serial] = H.tolist()
-            print("  -> Transform saved to memory.")
+            # Save to NPZ file
+            filename = f"cam_{serial}_to_robot_transform.npz"
+            filepath = os.path.join(CALIBRATION_DIR, filename)
+
+            # Saving with key 'transform'
+            np.savez(filepath, transform=H)
+
+            print(f"  -> Saved to {filepath}")
         else:
             print("  -> RANSAC failed.")
-
-    # Save all results to JSON
-    if calibration_results:
-        with open(CALIBRATION_OUTPUT_FILE, 'w') as f:
-            json.dump(calibration_results, f, indent=4)
-        print(f"\n------------------------------------------------")
-        print(f"Saved calibrations to {CALIBRATION_OUTPUT_FILE}")
-        print(f"------------------------------------------------")
-    else:
-        print("\nNo calibrations were successful.")
 
 
 if __name__ == "__main__":
