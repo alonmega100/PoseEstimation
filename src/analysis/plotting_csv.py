@@ -175,19 +175,8 @@ def main():
         add_traces_for_kind("camera", "Camera", offset=0, size=3, connect_lines=not args.no_camera_lines)
 
     # --- 3. Aligned Cameras ---
-    # Offset 5, Size 4 (Your script used size 4 for aligned)
-    # The offset=5 ensures Aligned cams have DIFFERENT colors than Raw cams
-    add_traces_for_kind("camera_aligned", "Camera (aligned)", offset=5, size=4, connect_lines=not args.no_camera_lines)
 
-    # --- 4. IMU ---
-    # Offset 10, Size 4
-    # add_traces_for_kind("imu", "IMU", offset=10, size=4, connect_lines=True)
-    #
-    # fig.update_layout(
-    #     scene=dict(aspectmode="data"),
-    #     title=f"3D Robot, Camera & IMU Observations: {os.path.basename(csv_path)}",
-    #     margin=dict(l=0, r=0, b=0, t=40),
-    # )
+    add_traces_for_kind("camera_aligned", "Camera (aligned)", offset=5, size=4, connect_lines=not args.no_camera_lines)
 
     # Save and show
     html_path = os.path.splitext(csv_path)[0] + ".html"
