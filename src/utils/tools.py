@@ -166,6 +166,26 @@ def moving_average(values, window):
 # ---------------------------------------------------------------------
 # IO & TRANSFORMS
 # ---------------------------------------------------------------------
+def matrix_to_flat_dict(prefix, mat):
+    mat = np.array(mat)  # safe conversion
+    out = {}
+    for r in range(4):
+        for c in range(4):
+            out[f"{prefix}_{r}{c}"] = float(mat[r, c])
+    return out
+
+
+def is_4x4_matrix(obj):
+    import numpy as _np
+    # accept list-of-lists AND np.array
+    if isinstance(obj, _np.ndarray):
+        return obj.shape == (4, 4)
+    return (
+            isinstance(obj, (list, tuple)) and
+            len(obj) == 4 and
+            all(isinstance(row, (list, tuple)) and len(row) == 4 for row in obj)
+    )
+
 
 def choose_csv_interactively(csv_dir: str) -> str:
     if not os.path.exists(csv_dir):
@@ -227,3 +247,106 @@ def load_imu_to_robot_transform(imu_source: str, transform_dir: str) -> Optional
         return to_H(d["R"], d.get("t", np.zeros(3)))
     except:
         return None
+
+
+
+def list_of_movements_generator(
+    num_commands: int,
+    bounds = {"x": (-0.1, 0.1), "y": (0.0, 0.25), "z": (-0.15, 0.0)},
+    p_axis: float = 0.5,
+    precision: float = 0.1,
+    rng: np.random.Generator | None = None,
+):
+    """
+    Generate commands like 'x 0.1 y -0.2' with cumulative state.
+    Any axis whose rounded delta == 0 is omitted (no 'x 0').
+    Guarantees exactly num_commands non-empty commands.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    pos = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+    def fmt(v: float) -> str:
+        # nice formatting without trailing zeros
+        s = f"{v:.10f}".rstrip("0").rstrip(".")
+        return s if s else "0"
+
+    cmds: list[str] = []
+    axes = ("x", "y", "z")
+
+    while len(cmds) < num_commands:
+        parts = []
+        for axis in axes:
+            if rng.random() >= p_axis:
+                continue
+            lb, ub = bounds[axis]
+            # sample relative to remaining room (still cumulative, but no hard clipping)
+            raw = rng.uniform(lb - pos[axis], ub - pos[axis])
+            delta = round(raw / precision) * precision
+            if abs(delta) < 1e-12:   # <-- skip zeros so we never emit 'x 0'
+                continue
+            pos[axis] += delta
+            parts.append(f"{axis} {fmt(delta)}")
+
+        if parts:                   # ensure non-empty command
+            cmds.append(" ".join(parts))
+        # else: loop again until we produce a non-empty command
+
+    return cmds
+
+
+
+def make_vn_cmd(body: str) -> bytes:
+    cs = 0
+    for b in body.encode("ascii"):
+        cs ^= b
+    return f"${body}*{cs:02X}\r\n".encode("ascii")
+
+
+
+def parse_vn_vnrrg_08(line: str) -> Optional[Tuple[float, ...]]:
+    """
+    Parse VectorNav ASCII response for a few useful registers.
+
+    Supports:
+    - $VNRRG,08,...  -> yaw, pitch, roll (no accel)
+    - $VNRRG,27,...  -> yaw, pitch, roll, accelX, accelY, accelZ  (YMR)
+
+    Returns:
+        (yaw_deg, pitch_deg, roll_deg)
+    or
+        (yaw_deg, pitch_deg, roll_deg, ax, ay, az)
+    """
+    if not line.startswith("$VNRRG,"):
+        return None
+    try:
+        data_part = line.split("*", 1)[0]
+        parts = data_part.split(",")
+        if len(parts) < 5:
+            return None
+
+        reg_id = parts[1]
+        yaw = float(parts[2])
+        pitch = float(parts[3])
+        roll = float(parts[4])
+
+        if reg_id == "08":
+            # Plain YPR register: yaw, pitch, roll only
+            return yaw, pitch, roll
+
+        if reg_id == "27":
+            # YMR: yaw, pitch, roll, magX, magY, magZ, accelX, accelY, accelZ, gyroX, gyroY, gyroZ
+            # indices: 2=yaw, 3=pitch, 4=roll, 5=magX, 6=magY, 7=magZ, 8=accX, 9=accY, 10=accZ, ...
+            if len(parts) < 11:
+                return yaw, pitch, roll
+            ax = float(parts[8])
+            ay = float(parts[9])
+            az = float(parts[10])
+            return yaw, pitch, roll, ax, ay, az
+
+        # Fallback: at least return orientation
+        return yaw, pitch, roll
+    except Exception:
+        return None
+
