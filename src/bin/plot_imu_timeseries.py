@@ -3,12 +3,11 @@ import argparse
 import csv
 import json
 import os
-import glob
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from src.utils.tools import moving_average, H_to_xyzrpy_ZYX, pose_row_to_matrix, find_latest_csv
 import numpy as np
 import pandas as pd
+from src.utils.tools import moving_average, H_to_xyzrpy_ZYX, pose_row_to_matrix, find_latest_csv
 
 MOVING_AVG_WINDOW = 200  # number of samples in the moving average window
 
@@ -17,50 +16,83 @@ MOVING_AVG_WINDOW = 200  # number of samples in the moving average window
 # Load IMU rows
 # ---------------------------------------------------------------
 def load_imu_from_csv(csv_path):
-    t, wax, way, waz = [], [], [], []  # world-frame accel (after analysis)
-    bax, bay, baz = [], [], []  # body-frame accel (before analysis)
+    t = []
+    ax, ay, az = [], [], []
     yaw, pitch, roll = [], [], []
 
+    # Robust reading using csv.DictReader
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             if row.get("source") != "imu":
                 continue
 
-            raw = row.get("raw_data") or ""
             try:
-                data = json.loads(raw)
+                # --- 1. Extract JSON Raw Data (if available) ---
+                raw = row.get("raw_data") or ""
+                data = {}
+                if raw:
+                    try:
+                        data = json.loads(raw)
+                    except:
+                        pass
+
+                # --- 2. Get Timing ---
+                # Prefer 't_sec' from raw data (relative time), fallback to empty
+                t_val = None
+                if "t_sec" in data:
+                    t_val = float(data["t_sec"])
+                elif row.get("timestamp"):
+                    # Fallback logic if needed, but usually we rely on t_sec for IMU plotting
+                    pass
+
+                if t_val is None:
+                    continue
+
+                # --- 3. Get Orientation ---
+                # Try flattened columns first
+                r_yaw = row.get("imu_yaw_deg")
+                r_pitch = row.get("imu_pitch_deg")
+                r_roll = row.get("imu_roll_deg")
+
+                # If empty string, try JSON keys
+                y = float(r_yaw) if r_yaw and r_yaw != "" else data.get("yaw_deg")
+                p = float(r_pitch) if r_pitch and r_pitch != "" else data.get("pitch_deg")
+                r = float(r_roll) if r_roll and r_roll != "" else data.get("roll_deg")
+
+                # --- 4. Get Acceleration ---
+                # Try flattened columns first
+                r_ax = row.get("imu_acc_x")
+                r_ay = row.get("imu_acc_y")
+                r_az = row.get("imu_acc_z")
+
+                if r_ax and r_ax != "":
+                    cx, cy, cz = float(r_ax), float(r_ay), float(r_az)
+                # Fallback: check 'accel' tuple in JSON
+                elif "accel" in data and data["accel"]:
+                    cx, cy, cz = data["accel"]
+                # Fallback: check separate keys in JSON
+                elif "acc_x" in data:
+                    cx, cy, cz = float(data["acc_x"]), float(data["acc_y"]), float(data["acc_z"])
+                else:
+                    # No accel data available
+                    cx, cy, cz = float("nan"), float("nan"), float("nan")
+
+                if y is None or p is None or r is None:
+                    continue
+
+                t.append(t_val)
+                yaw.append(y)
+                pitch.append(p)
+                roll.append(r)
+                ax.append(cx)
+                ay.append(cy)
+                az.append(cz)
+
             except Exception:
                 continue
 
-            t_sec = data.get("t_sec")
-            acc_world = data.get("acc_world_m_s2")
-            acc_body = data.get("acc_body")  # may be missing in older CSVs
-
-            # Require valid world-frame acceleration
-            if t_sec is None or acc_world is None or len(acc_world) != 3:
-                continue
-
-            t.append(float(t_sec))
-            wax.append(float(acc_world[0]))
-            way.append(float(acc_world[1]))
-            waz.append(float(acc_world[2]))
-
-            # If body-frame accel exists, use it; otherwise fill with NaNs so lengths match
-            if acc_body is not None and len(acc_body) == 3:
-                bax.append(float(acc_body[0]))
-                bay.append(float(acc_body[1]))
-                baz.append(float(acc_body[2]))
-            else:
-                bax.append(float("nan"))
-                bay.append(float("nan"))
-                baz.append(float("nan"))
-
-            yaw.append(float(data.get("yaw_deg", 0.0)))
-            pitch.append(float(data.get("pitch_deg", 0.0)))
-            roll.append(float(data.get("roll_deg", 0.0)))
-
-    return t, wax, way, waz, bax, bay, baz, yaw, pitch, roll
+    return t, ax, ay, az, yaw, pitch, roll
 
 
 # ---------------------------------------------------------------
@@ -69,136 +101,136 @@ def load_imu_from_csv(csv_path):
 def load_robot_pose_from_csv(csv_path):
     """Extract robot RPY angles from pose matrices in CSV using pandas."""
     POSE_PREFIX = "pose_"
-    
-    # Read CSV with pandas
-    df = pd.read_csv(csv_path)
-    
-    # Filter for robot rows
+
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception:
+        return [], [], [], []
+
+    if "source" not in df.columns:
+        return [], [], [], []
+
     df_robot = df[df["source"] == "robot"].copy()
-    
+
     if df_robot.empty:
         return [], [], [], []
-    
-    # Select time and pose columns (use 'timestamp' for time)
+
+    # Select time and pose columns
     time_col = "timestamp"
     pose_cols = [f"{POSE_PREFIX}{r}{c}" for r in range(4) for c in range(4)]
-    
-    # Check if time column exists
+
     if time_col not in df_robot.columns:
         return [], [], [], []
-    
-    # Check if all pose columns exist
+
     if not all(col in df_robot.columns for col in pose_cols):
         return [], [], [], []
-    
+
     df_robot = df_robot[[time_col] + pose_cols].dropna()
-    
+
     if df_robot.empty:
         return [], [], [], []
-    
-    # Convert timestamp to seconds (parse ISO format and get seconds since epoch)
-    df_robot[time_col] = pd.to_datetime(df_robot[time_col]).astype(int) / 1e9
-    
+
+    # Convert timestamp to seconds
+    try:
+        df_robot[time_col] = pd.to_datetime(df_robot[time_col]).astype(int) / 1e9
+    except:
+        return [], [], [], []
+
     # Extract RPY from pose matrices
     def extract_rpy(row):
-        H = pose_row_to_matrix(row, prefix=POSE_PREFIX)
-        xyzrpy = H_to_xyzrpy_ZYX(H)
-        # Returns [x, y, z, roll, pitch, yaw]
-        # xyzrpy[3:6] gives [roll, pitch, yaw]
-        return np.degrees(xyzrpy[3:6])
-    
+        try:
+            H = pose_row_to_matrix(row, prefix=POSE_PREFIX)
+            xyzrpy = H_to_xyzrpy_ZYX(H)
+            # Returns [x, y, z, roll, pitch, yaw]
+            return np.degrees(xyzrpy[3:6])
+        except:
+            return [np.nan, np.nan, np.nan]
+
     df_robot["rpy"] = df_robot.apply(extract_rpy, axis=1)
-    
+
     t_robot = df_robot[time_col].tolist()
     rpy_list = df_robot["rpy"].tolist()
-    
-    # Unpack RPY (rpy_list contains [roll, pitch, yaw] for each row)
+
     roll_robot = [rpy[0] for rpy in rpy_list]
     pitch_robot = [rpy[1] for rpy in rpy_list]
     yaw_robot = [rpy[2] for rpy in rpy_list]
-    
+
     return t_robot, yaw_robot, pitch_robot, roll_robot
 
 
 # ---------------------------------------------------------------
 # Plot using Plotly
 # ---------------------------------------------------------------
-def plot_with_plotly(t, wax, way, waz, bax, bay, baz, yaw, pitch, roll, 
+def plot_with_plotly(t, ax, ay, az, yaw, pitch, roll,
                      t_robot=None, yaw_robot=None, pitch_robot=None, roll_robot=None, title=""):
-    """Plot IMU and optionally robot orientation data."""
-    # Make time start at zero
+    """Plot IMU (Raw Accel + Orientation) and optionally robot orientation."""
+
+    # Normalize time to start at zero
     if t:
         t0 = t[0]
         t = [ti - t0 for ti in t]
-    
+
     if t_robot:
         t0_robot = t_robot[0]
         t_robot = [ti - t0_robot for ti in t_robot]
 
     # Pre-compute moving averages
-    wax_ma = moving_average(wax, MOVING_AVG_WINDOW)
-    way_ma = moving_average(way, MOVING_AVG_WINDOW)
-    waz_ma = moving_average(waz, MOVING_AVG_WINDOW)
-
-    bax_ma = moving_average(bax, MOVING_AVG_WINDOW)
-    bay_ma = moving_average(bay, MOVING_AVG_WINDOW)
-    baz_ma = moving_average(baz, MOVING_AVG_WINDOW)
+    ax_ma = moving_average(ax, MOVING_AVG_WINDOW)
+    ay_ma = moving_average(ay, MOVING_AVG_WINDOW)
+    az_ma = moving_average(az, MOVING_AVG_WINDOW)
 
     yaw_ma = moving_average(yaw, MOVING_AVG_WINDOW)
     pitch_ma = moving_average(pitch, MOVING_AVG_WINDOW)
     roll_ma = moving_average(roll, MOVING_AVG_WINDOW)
 
     fig = make_subplots(
-        rows=3,
+        rows=2,
         cols=3,
         subplot_titles=(
-            "World accel X [m/s²]", "World accel Y [m/s²]", "World accel Z [m/s²]",
-            "Body accel X (raw) [m/s²]", "Body accel Y (raw) [m/s²]", "Body accel Z (raw) [m/s²]",
+            "Accel X (Raw) [m/s²]", "Accel Y (Raw) [m/s²]", "Accel Z (Raw) [m/s²]",
             "Yaw [deg]", "Pitch [deg]", "Roll [deg]"
         )
     )
 
-    # Row 1: world-frame accelerations
-    fig.add_trace(go.Scatter(x=t, y=wax, mode="lines", name="a_world_x"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=t, y=wax_ma, mode="lines", name="a_world_x (MA)"), row=1, col=1)
+    # Row 1: Accelerations (Raw)
+    fig.add_trace(go.Scatter(x=t, y=ax, mode="lines", name="acc_x"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t, y=ax_ma, mode="lines", name="acc_x (MA)"), row=1, col=1)
 
-    fig.add_trace(go.Scatter(x=t, y=way, mode="lines", name="a_world_y"), row=1, col=2)
-    fig.add_trace(go.Scatter(x=t, y=way_ma, mode="lines", name="a_world_y (MA)"), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=ay, mode="lines", name="acc_y"), row=1, col=2)
+    fig.add_trace(go.Scatter(x=t, y=ay_ma, mode="lines", name="acc_y (MA)"), row=1, col=2)
 
-    fig.add_trace(go.Scatter(x=t, y=waz, mode="lines", name="a_world_z"), row=1, col=3)
-    fig.add_trace(go.Scatter(x=t, y=waz_ma, mode="lines", name="a_world_z (MA)"), row=1, col=3)
+    fig.add_trace(go.Scatter(x=t, y=az, mode="lines", name="acc_z"), row=1, col=3)
+    fig.add_trace(go.Scatter(x=t, y=az_ma, mode="lines", name="acc_z (MA)"), row=1, col=3)
 
-    # Row 2: body-frame accelerations
-    fig.add_trace(go.Scatter(x=t, y=bax, mode="lines", name="a_body_x"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=t, y=bax_ma, mode="lines", name="a_body_x (MA)"), row=2, col=1)
+    # Row 2: Orientations
+    fig.add_trace(go.Scatter(x=t, y=yaw, mode="lines", name="yaw (IMU)", line=dict(color="blue")), row=2, col=1)
+    fig.add_trace(go.Scatter(x=t, y=yaw_ma, mode="lines", name="yaw (IMU MA)", line=dict(color="lightblue")), row=2,
+                  col=1)
 
-    fig.add_trace(go.Scatter(x=t, y=bay, mode="lines", name="a_body_y"), row=2, col=2)
-    fig.add_trace(go.Scatter(x=t, y=bay_ma, mode="lines", name="a_body_y (MA)"), row=2, col=2)
-
-    fig.add_trace(go.Scatter(x=t, y=baz, mode="lines", name="a_body_z"), row=2, col=3)
-    fig.add_trace(go.Scatter(x=t, y=baz_ma, mode="lines", name="a_body_z (MA)"), row=2, col=3)
-
-    # Row 3: orientations
-    fig.add_trace(go.Scatter(x=t, y=yaw, mode="lines", name="yaw (IMU)", line=dict(color="blue")), row=3, col=1)
-    fig.add_trace(go.Scatter(x=t, y=yaw_ma, mode="lines", name="yaw (IMU MA)", line=dict(color="lightblue")), row=3, col=1)
-    
     if t_robot and yaw_robot:
-        fig.add_trace(go.Scatter(x=t_robot, y=yaw_robot, mode="lines", name="yaw (Robot)", line=dict(color="red", dash="dash")), row=3, col=1)
+        fig.add_trace(
+            go.Scatter(x=t_robot, y=yaw_robot, mode="lines", name="yaw (Robot)", line=dict(color="red", dash="dash")),
+            row=2, col=1)
 
-    fig.add_trace(go.Scatter(x=t, y=pitch, mode="lines", name="pitch (IMU)", line=dict(color="blue")), row=3, col=2)
-    fig.add_trace(go.Scatter(x=t, y=pitch_ma, mode="lines", name="pitch (IMU MA)", line=dict(color="lightblue")), row=3, col=2)
-    
+    fig.add_trace(go.Scatter(x=t, y=pitch, mode="lines", name="pitch (IMU)", line=dict(color="blue")), row=2, col=2)
+    fig.add_trace(go.Scatter(x=t, y=pitch_ma, mode="lines", name="pitch (IMU MA)", line=dict(color="lightblue")), row=2,
+                  col=2)
+
     if t_robot and pitch_robot:
-        fig.add_trace(go.Scatter(x=t_robot, y=pitch_robot, mode="lines", name="pitch (Robot)", line=dict(color="red", dash="dash")), row=3, col=2)
+        fig.add_trace(go.Scatter(x=t_robot, y=pitch_robot, mode="lines", name="pitch (Robot)",
+                                 line=dict(color="red", dash="dash")), row=2, col=2)
 
-    fig.add_trace(go.Scatter(x=t, y=roll, mode="lines", name="roll (IMU)", line=dict(color="blue")), row=3, col=3)
-    fig.add_trace(go.Scatter(x=t, y=roll_ma, mode="lines", name="roll (IMU MA)", line=dict(color="lightblue")), row=3, col=3)
-    
+    fig.add_trace(go.Scatter(x=t, y=roll, mode="lines", name="roll (IMU)", line=dict(color="blue")), row=2, col=3)
+    fig.add_trace(go.Scatter(x=t, y=roll_ma, mode="lines", name="roll (IMU MA)", line=dict(color="lightblue")), row=2,
+                  col=3)
+
     if t_robot and roll_robot:
-        fig.add_trace(go.Scatter(x=t_robot, y=roll_robot, mode="lines", name="roll (Robot)", line=dict(color="red", dash="dash")), row=3, col=3)
+        fig.add_trace(
+            go.Scatter(x=t_robot, y=roll_robot, mode="lines", name="roll (Robot)", line=dict(color="red", dash="dash")),
+            row=2, col=3)
 
     fig.update_layout(
-        height=1000,
+        height=800,
         width=1200,
         title_text=title,
         showlegend=True,
@@ -224,7 +256,7 @@ def main():
             return
         print(f"Using latest CSV: {csv_path}")
 
-    t, wax, way, waz, bax, bay, baz, yaw, pitch, roll = load_imu_from_csv(csv_path)
+    t, ax, ay, az, yaw, pitch, roll = load_imu_from_csv(csv_path)
 
     if not t:
         print("No IMU rows found in CSV.")
@@ -232,7 +264,7 @@ def main():
 
     # Try to load robot pose data for comparison
     t_robot, yaw_robot, pitch_robot, roll_robot = load_robot_pose_from_csv(csv_path)
-    
+
     if t_robot:
         print(f"Loaded {len(t_robot)} robot pose samples")
     else:
@@ -240,9 +272,9 @@ def main():
         t_robot = yaw_robot = pitch_robot = roll_robot = None
 
     plot_with_plotly(
-        t, wax, way, waz, bax, bay, baz, yaw, pitch, roll,
+        t, ax, ay, az, yaw, pitch, roll,
         t_robot=t_robot, yaw_robot=yaw_robot, pitch_robot=pitch_robot, roll_robot=roll_robot,
-        title=f"IMU & Robot Orientation ({os.path.basename(csv_path)}), Moving Average K: {MOVING_AVG_WINDOW}"
+        title=f"IMU (Raw) & Robot Orientation ({os.path.basename(csv_path)})"
     )
 
 
