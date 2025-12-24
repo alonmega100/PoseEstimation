@@ -1,4 +1,5 @@
 import sys
+import argparse
 from typing import List, Optional
 
 from src.vision.april_tag_processor import AprilTagProcessor
@@ -77,7 +78,22 @@ def run_vision_comparison(show_display: bool = False) -> None:
 
 
 def main() -> None:
-    run_vision_comparison()
+    parser = argparse.ArgumentParser(description="AprilTag vision comparison")
+    parser.add_argument(
+        "-vision",
+        type=str,
+        default="Off",
+        choices=["On", "Off", "on", "off", "ON", "OFF"],
+        help="Enable vision display window (On/Off)"
+    )
+
+
+    args = parser.parse_args()
+
+    show_display = args.vision.lower() == "on"
+
+    run_vision_comparison(show_display=show_display)
+
 
 
 if __name__ == "__main__":
