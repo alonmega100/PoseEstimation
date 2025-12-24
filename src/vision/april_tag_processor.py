@@ -3,7 +3,7 @@ import cv2
 
 from pupil_apriltags import Detector
 from src.utils.tools import to_H, inv_H
-from src.utils.config import (FRAME_W, FRAME_H, FPS, WORLD_TAG_ID, WORLD_TAG_SIZE, OBJ_TAG_SIZE,
+from src.utils.config import (FRAME_W, FRAME_H, WORLD_TAG_ID, WORLD_TAG_SIZE, OBJ_TAG_SIZE,
                               OBJ_TAG_IDS)
 from src.vision.realsense_driver import RealSenseInfraredCap
 
@@ -14,7 +14,7 @@ class AprilTagProcessor:
     Handles tag detection, pose calculation, and image visualization for a single camera.
     """
 
-    def __init__(self, serial: str): #, w=FRAME_W, h=FRAME_H, fps=FPS):
+    def __init__(self, serial: str):
         self.world_tag_size = WORLD_TAG_SIZE
         self.obj_tag_size = OBJ_TAG_SIZE
         self.obj_tag_ids = OBJ_TAG_IDS

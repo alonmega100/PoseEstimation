@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 
 # We assume these tools exist in your utils; if not, you might need to adjust imports
 from src.utils.tools import H_to_xyzrpy_ZYX, rot_geodesic_angle_deg, pose_row_to_matrix, choose_csv_interactively, rpy_to_R_deg
+from src.utils.config import CAMERA_SERIALS
 
 # ---------------------------------------------------------------------
 # CONFIG: Paths relative to project root

@@ -11,7 +11,7 @@ import os
 import datetime
 import json
 
-from src.robot.panda_controller import PandaController, DEFAULT_SPEED_FACTOR
+from src.robot.panda_controller import PandaController
 from src.vision.april_tag_processor import AprilTagProcessor
 from src.vision.vision_display import VisionDisplay
 from src.utils.tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator

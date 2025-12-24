@@ -299,7 +299,12 @@ def find_latest_csv():
     csvs.sort(key=lambda p: os.path.getmtime(p))
     return csvs[-1]
 
+
 def rpy_to_R_deg(yaw_deg, pitch_deg, roll_deg):
+    """
+    Build a 3x3 rotation matrix from yaw, pitch, roll in degrees
+    using ZYX (yaw-pitch-roll) convention.
+    """
     y = np.radians(yaw_deg)
     p = np.radians(pitch_deg)
     r = np.radians(roll_deg)

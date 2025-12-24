@@ -1,7 +1,6 @@
 import sys
 import argparse
 from typing import List, Optional
-
 from src.vision.april_tag_processor import AprilTagProcessor
 from src.vision.vision_display import VisionDisplay
 from src.utils.config import CAMERA_SERIALS
@@ -27,9 +26,6 @@ def run_vision_comparison(show_display: bool = False) -> None:
 
         if len(processors) < 1:
             raise RuntimeError("Failed to open any cameras. Cannot run vision comparison.")
-
-        if len(processors) != 2:
-            print("[warning] Running with != 2 cameras. Cross-camera delta overlay will be shown only when 2 cameras are present.")
 
         # ----- Display Setup (VisionDisplay) -----
         if show_display:
@@ -58,7 +54,6 @@ def run_vision_comparison(show_display: bool = False) -> None:
                         break
 
         except KeyboardInterrupt:
-            # Clean exit with no traceback
             print("\n[info] Ctrl+C received. Exiting gracefully...")
 
     except Exception as e:
@@ -93,8 +88,6 @@ def main() -> None:
     show_display = args.vision.lower() == "on"
 
     run_vision_comparison(show_display=show_display)
-
-
 
 if __name__ == "__main__":
     main()

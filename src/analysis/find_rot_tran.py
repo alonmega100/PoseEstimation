@@ -3,8 +3,8 @@ import pandas as pd
 from os import listdir
 import os
 import sys
-from src.utils.tools import rot_geodesic_angle_deg
-from src.utils.config import WORLD_TAG_ID
+from src.utils.tools import rot_geodesic_angle_deg, rpy_to_R_deg
+from src.utils.config import WORLD_TAG_ID, CAMERA_SERIALS, USE_WORLD_TAG
 
 # ---------- config ----------
 # Paths relative to project root
@@ -14,21 +14,6 @@ SAVE_PATH = "data/DATA/hand_eye/cam_to_robot_transform.npz"
 TIME_TOL = pd.Timedelta('30ms')    # cam↔robot pairing tolerance
 
 
-def rpy_to_R_deg(yaw_deg, pitch_deg, roll_deg):
-    """
-    Build a 3x3 rotation matrix from yaw, pitch, roll in degrees
-    using ZYX (yaw-pitch-roll) convention.
-    """
-    y = np.radians(yaw_deg)
-    p = np.radians(pitch_deg)
-    r = np.radians(roll_deg)
-    cy, sy = np.cos(y), np.sin(y)
-    cp, sp = np.cos(p), np.sin(p)
-    cr, sr = np.cos(r), np.sin(r)
-    Rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
-    Ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
-    Rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
-    return Rz @ Ry @ Rx
 
 # Check if directory exists
 if not os.path.exists(CSV_DIR):
@@ -254,11 +239,9 @@ df["timestamp"] = pd.to_datetime(df["timestamp"])
 robot = df[df['source'] == 'robot'][(df["event"] == "pose_snapshot")]
 
 # For compatibility: keep these if you still want them
-cam1 = df[df['source'] == '839112062097']
-cam2 = df[df['source'] == '845112070338']
 
 
-# Optional diagnostics: plain LSQ per camera
+
 def fit_one(cam_df, name):
     cam_tag = cam_df[
         (cam_df["event"] == "tag_pose_snapshot") &
@@ -274,18 +257,27 @@ def fit_one(cam_df, name):
     print(f"[{name}] N={len(e)} | mean={e.mean():.6f} | median={np.median(e):.6f} | max={e.max():.6f}")
     return R, t
 
+# Build camera dfs from the configured serial list
+cams = []
+cam_sources_present = []
 
-fit_one(cam1, "cam1")
-fit_one(cam2, "cam2")
+for serial_number in CAMERA_SERIALS:
+    cam_df = df[df["source"] == serial_number]
+    if cam_df.empty:
+        print(f"[cam_{serial_number}] no rows for this camera in CSV, skipping.")
+        continue
 
+    cams.append(cam_df)
+    cam_sources_present.append(serial_number)
 
-# --- Combined RANSAC fit using both cams (unchanged) ---
-# NOTE: This block might fail if cam1/cam2 don't exist in your specific CSV
-# You might want to wrap this in a try/except or check if they are empty
-if not cam1.empty and not cam2.empty:
+    # Optional diagnostics: plain LSQ per camera
+    fit_one(cam_df, f"{serial_number}")
+
+# --- Combined RANSAC fit using ALL cameras found from CAMERA_SERIALS ---
+if len(cams) >= 3:
     try:
         R, t, stats, inliers = stack_and_fit_ransac(
-            [cam1, cam2],
+            cams,
             robot,
             WORLD_TAG_ID,
             time_tol=TIME_TOL,
@@ -295,19 +287,27 @@ if not cam1.empty and not cam2.empty:
             random_state=42
         )
 
-        print("\n=== RANSAC (cam1+cam2) -> Robot transform ===")
+        print("\n=== RANSAC (combined cameras) -> Robot transform ===")
+        print("Cameras used:", cam_sources_present)
         print("R =\n", R)
         print("t =", t)
         print("stats =", stats)
 
-        # save combined transform (as before)
         os.makedirs(os.path.dirname(SAVE_PATH), exist_ok=True)
-        np.savez(SAVE_PATH, R=R, t=t, stats=stats, source="combined")
+        np.savez(
+            SAVE_PATH,
+            R=R,
+            t=t,
+            stats=stats,
+            source="combined",
+            cameras_used=np.array(cam_sources_present, dtype=str),
+        )
         print(f"Saved combined transform to {SAVE_PATH}")
+
     except Exception as e:
-        print("Skip save combined:", e)
+        print("[INFO] Combined fit failed, skipping save:", e)
 else:
-    print("\n[INFO] Skipping hardcoded cam1+cam2 combined fit (cameras not found in CSV).")
+    print("\n[INFO] No cameras from CAMERA_SERIALS were found in this CSV; skipping combined fit.")
 
 
 # --- NEW: per-camera RANSAC + save one file per SN ---
