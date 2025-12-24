@@ -82,7 +82,7 @@ def main():
     cam_ids = [s for s in df["source"].unique() if s != "robot" and not str(s).startswith("imu")]
 
     # Load Transforms using Shared Tool
-    transforms = load_cam_to_robot_transforms(None, args.transform_dir, cam_ids)
+    transforms = load_cam_to_robot_transforms(args.transform_dir)
 
     for cid in cam_ids:
         if cid in transforms:

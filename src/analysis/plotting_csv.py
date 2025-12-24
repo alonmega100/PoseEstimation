@@ -104,7 +104,9 @@ def main():
     # Note: We filter out non-camera points later based on --only-aligned if needed
     cams = [p for p in points if p["kind"] == "camera"]
     cam_ids = sorted(list(set(p["source"] for p in cams)))
-    transforms = load_cam_to_robot_transforms(None, args.transform_dir, cam_ids)
+    transforms = load_cam_to_robot_transforms(args.transform_dir)
+    print("TRANSFORMS==========================")
+    print(transforms)
 
     aligned_points = []
     for p in cams:

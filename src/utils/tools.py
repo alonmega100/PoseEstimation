@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import glob
 from typing import Dict, List, Optional, Any, Tuple
-
+from src.utils.config import CAMERA_SERIALS
 
 # ---------------------------------------------------------------------
 # MATH & GEOMETRY HELPERS
@@ -208,36 +208,60 @@ def find_latest_csv(csv_dir="data/CSV") -> Optional[str]:
     return max(files, key=os.path.getmtime)
 
 
-def load_cam_to_robot_transforms(transform_file: Optional[str], transform_dir: str, cam_ids: List[str]) -> Dict[
-    str, np.ndarray]:
-    """Robustly load transforms for list of camera IDs."""
-    transforms = {}
+def load_cam_to_robot_transforms(calib_dir):
+    """
+    Scans the directory for files named 'cam_{serial}_to_robot_transform.npz'
+    and loads the 'transform' key into a dictionary: { serial: 4x4_numpy_matrix }
+    """
+    calibs = {}
+    if not os.path.exists(calib_dir):
+        print(f"Warning: Calibration directory {calib_dir} not found.")
+        return calibs
 
-    # 1. Try per-camera files
-    if os.path.exists(transform_dir):
-        for cid in cam_ids:
-            fpath = os.path.join(transform_dir, f"cam_{cid}_to_robot_transform.npz")
-            if os.path.exists(fpath):
+    print(f"Scanning {calib_dir} for transforms...")
+
+    # Regex to extract serial from filename: cam_(SERIAL)_to_robot_transform.npz
+    # pattern = re.compile(r"cam_([a-zA-Z0-9]+)_to_robot_transform\.npz")
+    for serial_number in CAMERA_SERIALS:
+        for fname in os.listdir(calib_dir):
+            # match = pattern.match(fname)
+            file_name = fr"cam_{serial_number}_to_robot_transform.npz"
+            if fname == file_name:
+                full_path = os.path.join(calib_dir, fname)
                 try:
-                    d = np.load(fpath, allow_pickle=True)
-                    if "R" in d and "t" in d:
-                        transforms[cid] = to_H(d["R"], d["t"])
+                    # Load NPZ file
+                    with np.load(full_path) as data:
+                        if 'transform' in data:
+                            calibs[serial_number] = data['transform']
+                            print(f"  -> Loaded transform for camera {serial_number}")
+                        else:
+                            print(f"  -> Warning: 'transform' key missing in {fname}")
                 except Exception as e:
-                    print(f"[WARN] Failed to load {fpath}: {e}")
+                    print(f"  -> Failed to load {fname}: {e}")
 
-    # 2. Try global fallback if provided
-    if transform_file and os.path.exists(transform_file):
-        try:
-            d = np.load(transform_file, allow_pickle=True)
-            if "R" in d and "t" in d:
-                T = to_H(d["R"], d["t"])
-                for cid in cam_ids:
-                    if cid not in transforms: transforms[cid] = T
-        except Exception:
-            pass
-
-    return transforms
-
+    return calibs
+#
+# def load_cam_to_robot_transforms(transform_dir: str) -> Dict[
+#     str, np.ndarray]:
+#     """Robustly load transforms for list of camera IDs."""
+#     transforms = {}
+#
+#     # 1. Try per-camera files
+#     if os.path.exists(transform_dir):
+#         for cid in CAMERA_SERIALS:
+#             fpath = os.path.join(transform_dir, f"cam_{cid}_to_robot_transform.npz")
+#             if os.path.exists(fpath):
+#                 try:
+#                     d = np.load(fpath, allow_pickle=True)
+#                     if "R" in d and "t" in d:
+#                         transforms[cid] = to_H(d["R"], d["t"])
+#                 except Exception as e:
+#                     print(f"[WARN] Failed to load {fpath}: {e}")
+#
+#     # 2. Try global fallback if provided
+#
+#     return transforms
+#
 
 def load_imu_to_robot_transform(imu_source: str, transform_dir: str) -> Optional[np.ndarray]:
     fpath = os.path.join(transform_dir, f"imu_{imu_source}_to_robot_transform.npz")
