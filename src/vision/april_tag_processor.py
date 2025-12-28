@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 
 from pupil_apriltags import Detector
-from src.utils.tools import to_H, inv_H
+from src.utils.tools import to_H, inv_H, H_to_xyzrpy_ZYX
 from src.utils.config import (FRAME_W, FRAME_H, WORLD_TAG_ID, WORLD_TAG_SIZE, OBJ_TAG_SIZE,
                               OBJ_TAG_IDS, USE_WORLD_TAG    )
 from src.vision.realsense_driver import RealSenseInfraredCap
@@ -120,19 +120,11 @@ class AprilTagProcessor:
                     H_0i = H_0c @ H_c_by_id[tid][0]
                 else:
                     pass
-                # H_0i = self._canonicalize_pose_z_positive(H_0i)
-                # H0i[tid] = H_0i
 
-                # ... (Drawing text logic) ...
-
-                tx, ty, tz = (H_c_by_id[tid][0])[:3, 3]
-                cv2.putText(vis, f"tag{tid} x:{tx:+.3f} y:{ty:+.3f} z:{tz:+.3f}",
-                            (int(corners[0][0]), int(corners[0][1] - 10)),
+                tx, ty, tz,roll,pitch, yaw = H_to_xyzrpy_ZYX((H_c_by_id[tid][0]))
+                cv2.putText(vis, f"tag{tid} x:{tx:+.3f} y:{ty:+.3f} z:{tz:+.3f} yaw:{yaw:+.3f} pitch:{pitch:+.3f} roll:{roll:+.3f}",
+                            (int(corners[0][0]-300), int(corners[0][1] + 30)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (50, 220, 50), 2)
-############################################################################################################################################################################################################################################################################################################
-        # if not world_tag_visible:
-        #     cv2.putText(vis, "WORLD TAG 0 NOT VISIBLE", (10, 30),
-        #                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
 
         return vis, H_c_by_id
 
