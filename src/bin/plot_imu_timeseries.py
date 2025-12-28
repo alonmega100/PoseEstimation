@@ -51,20 +51,20 @@ def load_imu_from_csv(csv_path):
 
                 # --- 3. Get Orientation ---
                 # Try flattened columns first
-                r_yaw = row.get("imu_yaw_deg")
-                r_pitch = row.get("imu_pitch_deg")
-                r_roll = row.get("imu_roll_deg")
+                r_yaw = row.get("yaw")
+                r_pitch = row.get("pitch")
+                r_roll = row.get("roll")
 
                 # If empty string, try JSON keys
-                y = float(r_yaw) if r_yaw and r_yaw != "" else data.get("yaw_deg")
-                p = float(r_pitch) if r_pitch and r_pitch != "" else data.get("pitch_deg")
-                r = float(r_roll) if r_roll and r_roll != "" else data.get("roll_deg")
+                y = float(r_yaw) if r_yaw and r_yaw != "" else data.get("yaw")
+                p = float(r_pitch) if r_pitch and r_pitch != "" else data.get("pitch")
+                r = float(r_roll) if r_roll and r_roll != "" else data.get("roll")
 
                 # --- 4. Get Acceleration ---
                 # Try flattened columns first
-                r_ax = row.get("imu_acc_x")
-                r_ay = row.get("imu_acc_y")
-                r_az = row.get("imu_acc_z")
+                r_ax = row.get("acc_x")
+                r_ay = row.get("acc_y")
+                r_az = row.get("acc_z")
 
                 if r_ax and r_ax != "":
                     cx, cy, cz = float(r_ax), float(r_ay), float(r_az)

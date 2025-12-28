@@ -90,9 +90,9 @@ class IMUReader:
 
                         sample = {
                             "t_sec": t_rel,
-                            "yaw_deg": float(yaw),
-                            "pitch_deg": float(pitch),
-                            "roll_deg": float(roll),
+                            "yaw": float(yaw),
+                            "pitch": float(pitch),
+                            "roll": float(roll),
                             "accel": accel,  # (ax, ay, az) raw body frame
                         }
 

@@ -496,9 +496,9 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
 
                     # IMU samples -> LOG ORIENTATION AND ACCELERATION ONLY
                     if src == "imu" and isinstance(data, dict):
-                        yaw = data.get("yaw_deg")
-                        pitch = data.get("pitch_deg")
-                        roll = data.get("roll_deg")
+                        yaw = data.get("yaw")
+                        pitch = data.get("pitch")
+                        roll = data.get("roll")
 
                         # Trying to find acceleration.
                         # Assumes key is 'accel'. Adjust this if your dict uses 'accel_m_s2' or similar.
@@ -512,12 +512,12 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                             "source": src,
                             "event": ev,
                             "raw_data": json.dumps(data),
-                            "imu_yaw_deg": float(yaw) if yaw is not None else "",
-                            "imu_pitch_deg": float(pitch) if pitch is not None else "",
-                            "imu_roll_deg": float(roll) if roll is not None else "",
-                            "imu_acc_x": float(acc[0]) if acc and acc[0] is not None else "",
-                            "imu_acc_y": float(acc[1]) if acc and acc[1] is not None else "",
-                            "imu_acc_z": float(acc[2]) if acc and acc[2] is not None else "",
+                            "yaw": float(yaw) if yaw is not None else "",
+                            "pitch": float(pitch) if pitch is not None else "",
+                            "roll": float(roll) if roll is not None else "",
+                            "acc_x": float(acc[0]) if acc and acc[0] is not None else "",
+                            "acc_y": float(acc[1]) if acc and acc[1] is not None else "",
+                            "acc_z": float(acc[2]) if acc and acc[2] is not None else "",
                         })
                     else:
                         safe_data = data
@@ -531,11 +531,8 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                         })
 
             # UPDATED IMU COLUMNS
-            IMU_COLS = [
-                "imu_yaw_deg", "imu_pitch_deg", "imu_roll_deg",
-                "imu_acc_x", "imu_acc_y", "imu_acc_z"
-            ]
-            fieldnames = ["timestamp", "source", "event", "tag_id", "raw_data"] + IMU_COLS + POSE_COLS
+
+            fieldnames = ["timestamp", "source", "event", "tag_id", "raw_data","yaw", "pitch", "roll", "acc_x", "acc_y", "acc_z"] + POSE_COLS
             try:
                 with open(log_filename, "w", newline="") as f:
                     csv_writer = csv.DictWriter(f, fieldnames=fieldnames)

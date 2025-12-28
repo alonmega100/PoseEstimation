@@ -23,9 +23,9 @@ for i in range(100):
 
     if imu_sample is not None and isinstance(imu_sample, dict):
         imu_t = imu_sample.get("t_sec", float("nan"))
-        imu_yaw = imu_sample.get("yaw_deg", float("nan"))
-        imu_pitch = imu_sample.get("pitch_deg", float("nan"))
-        imu_roll = imu_sample.get("roll_deg", float("nan"))
+        imu_yaw = imu_sample.get("yaw", float("nan"))
+        imu_pitch = imu_sample.get("pitch", float("nan"))
+        imu_roll = imu_sample.get("roll", float("nan"))
 
         # 'accel' contains the raw body acceleration (ax, ay, az)
         accel = imu_sample.get("accel", None)
@@ -35,9 +35,9 @@ for i in range(100):
 
     row = {
         "imu_t": imu_t,
-        "imu_yaw_deg": imu_yaw,
-        "imu_pitch_deg": imu_pitch,
-        "imu_roll_deg": imu_roll,
+        "yaw": imu_yaw,
+        "pitch": imu_pitch,
+        "roll": imu_roll,
         "accel": accel,
     }
     print(row)
