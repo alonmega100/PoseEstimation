@@ -3,7 +3,7 @@ import argparse
 from typing import List, Optional
 from src.vision.april_tag_processor import AprilTagProcessor
 from src.vision.vision_display import VisionDisplay
-from src.utils.config import CAMERA_SERIALS
+from src.utils.config import CAMERA_SERIALS, SHOW_DISPLAY
 
 
 def run_vision_comparison(show_display: bool = False) -> None:

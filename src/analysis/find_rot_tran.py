@@ -4,7 +4,7 @@ import csv
 import json
 import os
 from scipy.spatial.transform import Rotation as R
-from src.utils.config import CAMERA_SERIALS
+from src.utils.config import CAMERA_SERIALS, TIME_SYNC_TOLERANCE
 from src.utils.tools import pose_row_to_matrix
 
 # ---------------------------------------------------------
@@ -12,7 +12,7 @@ from src.utils.tools import pose_row_to_matrix
 # ---------------------------------------------------------
 RANSAC_ITERATIONS = 1000
 RANSAC_THRESHOLD = 0.02  # 2cm threshold for inliers
-TIME_SYNC_TOLERANCE = 0.1  # 100ms max diff
+
 CSV_FILE_PATH = "data/CSV/session_log_20251224_155001.csv"
 CALIBRATION_DIR = "data/DATA/hand_eye"
 

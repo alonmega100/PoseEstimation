@@ -4,7 +4,7 @@ import cv2
 from pupil_apriltags import Detector
 from src.utils.tools import to_H, inv_H
 from src.utils.config import (FRAME_W, FRAME_H, WORLD_TAG_ID, WORLD_TAG_SIZE, OBJ_TAG_SIZE,
-                              OBJ_TAG_IDS)
+                              OBJ_TAG_IDS, USE_WORLD_TAG    )
 from src.vision.realsense_driver import RealSenseInfraredCap
 
 
@@ -15,10 +15,13 @@ class AprilTagProcessor:
     """
 
     def __init__(self, serial: str):
-        self.world_tag_size = WORLD_TAG_SIZE
+
         self.obj_tag_size = OBJ_TAG_SIZE
         self.obj_tag_ids = OBJ_TAG_IDS
         self.cap = RealSenseInfraredCap(serial)
+
+        if USE_WORLD_TAG:
+            self.world_tag_size = WORLD_TAG_SIZE
 
         # NOTE: RealSense handles distortion internally, so we use camera intrinsics for reference only
         # The frames returned from cap.read() are already undistorted by RealSense hardware
@@ -28,6 +31,7 @@ class AprilTagProcessor:
             families="tag25h9", nthreads=4, quad_decimate=1.0, quad_sigma=0.0,
             refine_edges=True, decode_sharpening=0.25,
         )
+
 
     def _detect_tags(self, gray_undist: np.ndarray, camera_params: tuple, tag_size_m: float, allowed_ids: set):
         """Helper to run detector and convert pose to H matrix."""
@@ -90,24 +94,32 @@ class AprilTagProcessor:
         campar = (self.cap.K[0, 0], self.cap.K[1, 1], self.cap.K[0, 2], self.cap.K[1, 2])
 
         # --- Detection ---
-        world_map = self._detect_tags(undist, campar, self.world_tag_size, {WORLD_TAG_ID})
+
         obj_map = self._detect_tags(undist, campar, self.obj_tag_size, self.obj_tag_ids)
-        H_c_by_id = {**world_map, **obj_map}
+        if USE_WORLD_TAG:
+            world_map = self._detect_tags(undist, campar, self.world_tag_size, {WORLD_TAG_ID})
+            H_c_by_id = {**world_map, **obj_map}
+        else:
+            H_c_by_id = {**obj_map}
 
         # ... (Rest of the function logic for H0i and drawing remains exactly the same) ...
 
         # (Be sure to include the logic for calculating H0i, drawing axes, and returning vis, H0i here)
         H0i = {}
-        world_tag_visible = WORLD_TAG_ID in H_c_by_id
+        if USE_WORLD_TAG:
+            world_tag_visible = WORLD_TAG_ID in H_c_by_id
 
         for tid, (H, rvec, tvec, corners, size_used) in H_c_by_id.items():
             for k in range(4):
                 cv2.line(vis, tuple(corners[k]), tuple(corners[(k + 1) % 4]), (0, 255, 255), 2)
             self._draw_axes(vis, self.cap.K, rvec, tvec, 0.5 * size_used)
 
-            if world_tag_visible and tid in self.obj_tag_ids:
-                H_0c = inv_H(H_c_by_id[WORLD_TAG_ID][0])
-                H_0i = H_0c @ H_c_by_id[tid][0]
+            if tid in self.obj_tag_ids:
+                if USE_WORLD_TAG:
+                    H_0c = inv_H(H_c_by_id[WORLD_TAG_ID][0])
+                    H_0i = H_0c @ H_c_by_id[tid][0]
+                else:
+                    H_0i = H_c_by_id[tid][0]
                 H_0i = self._canonicalize_pose_z_positive(H_0i)
                 H0i[tid] = H_0i
 
@@ -116,10 +128,10 @@ class AprilTagProcessor:
                 cv2.putText(vis, f"tag{tid} x:{tx:+.3f} y:{ty:+.3f} z:{tz:+.3f}",
                             (int(corners[0][0]), int(corners[0][1] - 10)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (50, 220, 50), 2)
-
-        if not world_tag_visible:
-            cv2.putText(vis, "WORLD TAG 0 NOT VISIBLE", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
+############################################################################################################################################################################################################################################################################################################
+        # if not world_tag_visible:
+        #     cv2.putText(vis, "WORLD TAG 0 NOT VISIBLE", (10, 30),
+        #                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
 
         return vis, H0i
 

@@ -16,7 +16,7 @@ from src.vision.april_tag_processor import AprilTagProcessor
 from src.vision.vision_display import VisionDisplay
 from src.utils.tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator
 from src.utils.hdf5_writer import HDF5Writer
-from src.utils.config import OBJ_TAG_IDS, CAMERA_SERIALS
+from src.utils.config import OBJ_TAG_IDS, CAMERA_SERIALS, NUM_OF_COMMANDS_TO_GENERATE
 from src.imu.imu_reader import IMUReader
 
 # -------------------------------------------------
@@ -25,7 +25,7 @@ from src.imu.imu_reader import IMUReader
 
 TARGET_LOG_HZ = 30.0  # robot logger rate
 LOG_INTERVAL = 1.0 / TARGET_LOG_HZ
-NUM_OF_COMMANDS_TO_GENERATE = 20
+
 POSE_COLS = [f"pose_{r}{c}" for r in range(4) for c in range(4)]
 
 logging.basicConfig(
