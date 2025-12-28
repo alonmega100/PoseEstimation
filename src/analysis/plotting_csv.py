@@ -140,7 +140,6 @@ def main():
             color = get_color(i + offset)
 
             data = [p for p in subset if p["source"] == src]
-            print("printing data once")
 
 
             # VISUAL MATCH: specific hovertemplate from your script

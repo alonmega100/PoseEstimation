@@ -14,7 +14,7 @@ import json
 from src.robot.panda_controller import PandaController
 from src.vision.april_tag_processor import AprilTagProcessor
 from src.vision.vision_display import VisionDisplay
-from src.utils.tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator, make_serializable
+from src.utils.tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator, make_serializable, H_to_xyzrpy_ZYX
 from src.utils.hdf5_writer import HDF5Writer
 from src.utils.config import OBJ_TAG_IDS, CAMERA_SERIALS, NUM_OF_COMMANDS_TO_GENERATE
 from src.imu.imu_reader import IMUReader
@@ -481,13 +481,16 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                             mat = make_serializable(mat)
                             mat = mat[0]
                             if is_4x4_matrix(mat):
-
+                                _,_,_,roll,pitch, yaw = H_to_xyzrpy_ZYX(mat)
                                 flat_pose = matrix_to_flat_dict("pose", mat)
                                 rows_to_write.append({
                                     "timestamp": ts,
                                     "source": src,
                                     "event": ev,
                                     "tag_id": str(tag_id),
+                                    "yaw": float(yaw) if yaw is not None else "",
+                                    "pitch": float(pitch) if pitch is not None else "",
+                                    "roll": float(roll) if roll is not None else "",
                                     **flat_pose
                                 })
                             else:

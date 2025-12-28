@@ -26,6 +26,8 @@ def inv_H(H):
 
 
 def H_to_xyzrpy_ZYX(H):
+    H = np.array(H)  # safe conversion
+
     R = H[:3, :3];
     x, y, z = H[:3, 3]
     sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
