@@ -244,7 +244,9 @@ def main() -> None:
 
     # Load transforms using shared tool
     transforms = load_cam_to_robot_transforms(args.transform_dir)
-
+    print("#################################################")
+    print(transforms)
+    print("#################################################")
     # Per-camera vs robot
     for cid in cam_ids_in_csv:
         if cid in transforms:

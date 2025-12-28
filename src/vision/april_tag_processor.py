@@ -49,21 +49,22 @@ class AprilTagProcessor:
             out[tid] = (H, rvec, t, det.corners.astype(int), tag_size_m)
         return out
 
-    def _canonicalize_pose_z_positive(self, H: np.ndarray) -> np.ndarray:
-        """
-        Enforce a deterministic, right-handed orientation for a tag pose H.
-
-        We require that the tag's z-axis (third column of R) has non-negative
-        projection on the world z axis, i.e. z_world[2] >= 0. If not, we
-        rotate the tag frame by 180° about its x-axis, which flips y,z
-        but keeps det(R)=+1.
-        """
-        H = H.copy()
-        z_world = H[:3, 2]        # 3rd column = tag's z axis in world frame
-        if z_world[2] < 0:
-            # rotate tag frame by 180° about its local x-axis
-            H[:3, :3] = H[:3, :3] @ np.diag([1, -1, -1])
-        return H
+    # def _canonicalize_pose_z_positive(self, H: np.ndarray) -> np.ndarray:
+    #     """
+    #     Enforce a deterministic, right-handed orientation for a tag pose H.
+    #
+    #     We require that the tag's z-axis (third column of R) has non-negative
+    #     projection on the world z axis, i.e. z_world[2] >= 0. If not, we
+    #     rotate the tag frame by 180° about its x-axis, which flips y,z
+    #     but keeps det(R)=+1.
+    #     """
+    #     pass
+    #     H = H.copy()
+    #     z_world = H[:3, 2]        # 3rd column = tag's z axis in world frame
+    #     if z_world[2] < 0:
+    #         # rotate tag frame by 180° about its local x-axis
+    #         H[:3, :3] = H[:3, :3] @ np.diag([1, -1, -1])
+    #     return H
 
     def _draw_axes(self, img, K, rvec, tvec, length_m):
         """Draws axes on the image for visualization."""
@@ -105,7 +106,6 @@ class AprilTagProcessor:
         # ... (Rest of the function logic for H0i and drawing remains exactly the same) ...
 
         # (Be sure to include the logic for calculating H0i, drawing axes, and returning vis, H0i here)
-        H0i = {}
         if USE_WORLD_TAG:
             world_tag_visible = WORLD_TAG_ID in H_c_by_id
 
@@ -119,12 +119,13 @@ class AprilTagProcessor:
                     H_0c = inv_H(H_c_by_id[WORLD_TAG_ID][0])
                     H_0i = H_0c @ H_c_by_id[tid][0]
                 else:
-                    H_0i = H_c_by_id[tid][0]
-                H_0i = self._canonicalize_pose_z_positive(H_0i)
-                H0i[tid] = H_0i
+                    pass
+                # H_0i = self._canonicalize_pose_z_positive(H_0i)
+                # H0i[tid] = H_0i
 
                 # ... (Drawing text logic) ...
-                tx, ty, tz = H_0i[:3, 3]
+
+                tx, ty, tz = (H_c_by_id[tid][0])[:3, 3]
                 cv2.putText(vis, f"tag{tid} x:{tx:+.3f} y:{ty:+.3f} z:{tz:+.3f}",
                             (int(corners[0][0]), int(corners[0][1] - 10)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (50, 220, 50), 2)
@@ -133,7 +134,7 @@ class AprilTagProcessor:
         #     cv2.putText(vis, "WORLD TAG 0 NOT VISIBLE", (10, 30),
         #                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
 
-        return vis, H0i
+        return vis, H_c_by_id
 
     def release(self):
         self.cap.release()

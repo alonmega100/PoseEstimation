@@ -242,15 +242,15 @@ def vision_processing_thread(
         backoff = 0.01
         while not stop_event.is_set():
             try:
-                vis_img, H0i_dict = processor.process_frame()
+                vis_img, Hci_dict = processor.process_frame()
                 with state_lock:
                     shared_state["vision_image"][serial_num] = vis_img
-                    shared_state["tag_pose_by_cam"][serial_num] = H0i_dict
+                    shared_state["tag_pose_by_cam"][serial_num] = Hci_dict
 
                 if not discard:
-                    log_event(serial_num, "tag_pose_snapshot", {"pose": H0i_dict})
+                    log_event(serial_num, "tag_pose_snapshot", {"pose": Hci_dict})
                     with state_lock:
-                        shared_state["tag_pose_A"].update(H0i_dict)
+                        shared_state["tag_pose_A"].update(Hci_dict)
 
                 time.sleep(0.01)
                 backoff = 0.01

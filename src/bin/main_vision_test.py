@@ -36,12 +36,13 @@ def run_vision_comparison() -> None:
         # ----- Main Loop -----
         try:
             while True:
-                vis_list, H0i_list = [], []
+                vis_list, Hci_list = [], []
 
                 for processor in processors:
-                    vis, H0i = processor.process_frame()
+                    vis, Hci = processor.process_frame()
                     vis_list.append(vis)
-                    H0i_list.append(H0i)
+                    Hci_list.append(Hci)
+                    # print(Hci_list)
 
                 if SHOW_DISPLAY and display is not None:
                     # Update frames in display (by serial order)

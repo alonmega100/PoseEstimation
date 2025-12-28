@@ -90,16 +90,16 @@ def main():
 
     print(f"Plotting: {csv_path}")
     points = extract_points(csv_path)
-
-    # 2. Smooth IMU
-    if args.imu_smoothing > 1:
-        imus = [p for p in points if p["kind"] == "imu"]
-        if imus:
-            smooth_x = moving_average([p["x"] for p in imus], args.imu_smoothing)
-            smooth_y = moving_average([p["y"] for p in imus], args.imu_smoothing)
-            smooth_z = moving_average([p["z"] for p in imus], args.imu_smoothing)
-            for i, p in enumerate(imus):
-                p["x"], p["y"], p["z"] = smooth_x[i], smooth_y[i], smooth_z[i]
+    #
+    # # 2. Smooth IMU
+    # if args.imu_smoothing > 1:
+    #     imus = [p for p in points if p["kind"] == "imu"]
+    #     if imus:
+    #         smooth_x = moving_average([p["x"] for p in imus], args.imu_smoothing)
+    #         smooth_y = moving_average([p["y"] for p in imus], args.imu_smoothing)
+    #         smooth_z = moving_average([p["z"] for p in imus], args.imu_smoothing)
+    #         for i, p in enumerate(imus):
+    #             p["x"], p["y"], p["z"] = smooth_x[i], smooth_y[i], smooth_z[i]
 
     # 3. Transform Cameras
     # Note: We filter out non-camera points later based on --only-aligned if needed
@@ -109,7 +109,9 @@ def main():
 
     aligned_points = []
     for p in cams:
+        # print("for p in cams")
         if p["source"] in transforms:
+
             T = transforms[p["source"]]
             v = np.array([p["x"], p["y"], p["z"], 1.0])
             v_new = T @ v
@@ -138,6 +140,8 @@ def main():
             color = get_color(i + offset)
 
             data = [p for p in subset if p["source"] == src]
+            print("printing data once")
+
 
             # VISUAL MATCH: specific hovertemplate from your script
             fig.add_trace(go.Scatter3d(

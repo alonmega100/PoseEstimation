@@ -1,11 +1,12 @@
 import numpy as np
 import pandas as pd
+import argparse
 import csv
 import json
 import os
 from scipy.spatial.transform import Rotation as R
-from src.utils.config import CAMERA_SERIALS, TIME_SYNC_TOLERANCE
-from src.utils.tools import pose_row_to_matrix
+from src.utils.config import CAMERA_SERIALS, TIME_SYNC_TOLERANCE, USE_WORLD_TAG
+from src.utils.tools import pose_row_to_matrix, find_latest_csv
 
 # ---------------------------------------------------------
 # Configuration
@@ -13,7 +14,7 @@ from src.utils.tools import pose_row_to_matrix
 RANSAC_ITERATIONS = 1000
 RANSAC_THRESHOLD = 0.02  # 2cm threshold for inliers
 
-CSV_FILE_PATH = "data/CSV/session_log_20251224_155001.csv"
+CSV_FILE_PATH = "data/CSV/"
 CALIBRATION_DIR = "data/DATA/hand_eye"
 
 
@@ -23,7 +24,7 @@ CALIBRATION_DIR = "data/DATA/hand_eye"
 
 def load_data(csv_path):
     if not os.path.exists(csv_path):
-        from src.utils.tools import find_latest_csv
+
         found_csv = find_latest_csv()
         if found_csv:
             print(f"File {csv_path} not found. Using latest: {found_csv}")
@@ -129,8 +130,22 @@ def ransac_rigid_transform(pts_cam, pts_rob):
 # ---------------------------------------------------------
 
 def main():
-    print(f"Loading data from {CSV_FILE_PATH}...")
-    robot_data, camera_data_dict = load_data(CSV_FILE_PATH)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--csv", help="Path to CSV file")
+    args = parser.parse_args()
+
+    # Determine CSV path
+    if args.csv:
+        csv_path = args.csv
+    else:
+        # Fallback if run standalone without args
+        csv_path = find_latest_csv("data/CSV")
+        if not csv_path:
+            print("No CSV file found.")
+            return
+
+    print(f"Loading data from {csv_path}...")
+    robot_data, camera_data_dict = load_data(csv_path)
 
     # Ensure output directory exists
     os.makedirs(CALIBRATION_DIR, exist_ok=True)
