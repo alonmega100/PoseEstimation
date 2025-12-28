@@ -14,7 +14,7 @@ import json
 from src.robot.panda_controller import PandaController
 from src.vision.april_tag_processor import AprilTagProcessor
 from src.vision.vision_display import VisionDisplay
-from src.utils.tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator
+from src.utils.tools import matrix_to_flat_dict, is_4x4_matrix, list_of_movements_generator, make_serializable
 from src.utils.hdf5_writer import HDF5Writer
 from src.utils.config import OBJ_TAG_IDS, CAMERA_SERIALS, NUM_OF_COMMANDS_TO_GENERATE
 from src.imu.imu_reader import IMUReader
@@ -478,7 +478,10 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
 
                     if isinstance(data, dict) and "pose" in data and isinstance(data["pose"], dict):
                         for tag_id, mat in data["pose"].items():
+                            mat = make_serializable(mat)
+                            mat = mat[0]
                             if is_4x4_matrix(mat):
+
                                 flat_pose = matrix_to_flat_dict("pose", mat)
                                 rows_to_write.append({
                                     "timestamp": ts,
@@ -488,15 +491,7 @@ def run_concurrent_system(controller: PandaController, discard: bool = False):
                                     **flat_pose
                                 })
                             else:
-                                if isinstance(mat, np.ndarray):
-                                    mat = mat.tolist()
-                                rows_to_write.append({
-                                    "timestamp": ts,
-                                    "source": src,
-                                    "event": ev,
-                                    "tag_id": str(tag_id),
-                                    "raw_data": json.dumps(mat)
-                                })
+                                print(f"[WARNING] Unusable data {mat}")
                         continue
 
                     # IMU samples -> LOG ORIENTATION AND ACCELERATION ONLY

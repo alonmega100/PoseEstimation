@@ -351,3 +351,12 @@ def parse_vn_vnrrg_08(line: str) -> Optional[Tuple[float, ...]]:
     except Exception:
         return None
 
+def make_serializable(obj):
+    """Recursively convert numpy arrays to lists for JSON serialization."""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (list, tuple)):
+        return [make_serializable(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: make_serializable(v) for k, v in obj.items()}
+    return obj
