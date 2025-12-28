@@ -1,12 +1,11 @@
 import sys
-import argparse
 from typing import List, Optional
 from src.vision.april_tag_processor import AprilTagProcessor
-from src.vision.vision_display import VisionDisplay
 from src.utils.config import CAMERA_SERIALS, SHOW_DISPLAY
+if SHOW_DISPLAY:
+    from src.vision.vision_display import VisionDisplay
 
-
-def run_vision_comparison(show_display: bool = False) -> None:
+def run_vision_comparison() -> None:
     """Open cameras, run AprilTag processing, and optionally display feeds using VisionDisplay.
 
     Graceful exits:
@@ -28,7 +27,7 @@ def run_vision_comparison(show_display: bool = False) -> None:
             raise RuntimeError("Failed to open any cameras. Cannot run vision comparison.")
 
         # ----- Display Setup (VisionDisplay) -----
-        if show_display:
+        if SHOW_DISPLAY:
             WIN = "AprilTag REL Pose — comparison"
             display = VisionDisplay(window_title=WIN)
 
@@ -44,7 +43,7 @@ def run_vision_comparison(show_display: bool = False) -> None:
                     vis_list.append(vis)
                     H0i_list.append(H0i)
 
-                if show_display and display is not None:
+                if SHOW_DISPLAY and display is not None:
                     # Update frames in display (by serial order)
                     for serial_num, vis in zip(CAMERA_SERIALS, vis_list):
                         display.update_frame(serial_num, vis)
@@ -73,21 +72,8 @@ def run_vision_comparison(show_display: bool = False) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="AprilTag vision comparison")
-    parser.add_argument(
-        "-vision",
-        type=str,
-        default="Off",
-        choices=["On", "Off", "on", "off", "ON", "OFF"],
-        help="Enable vision display window (On/Off)"
-    )
 
-
-    args = parser.parse_args()
-
-    show_display = args.vision.lower() == "on"
-
-    run_vision_comparison(show_display=show_display)
+    run_vision_comparison()
 
 if __name__ == "__main__":
     main()
