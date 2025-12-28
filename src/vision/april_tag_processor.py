@@ -49,23 +49,6 @@ class AprilTagProcessor:
             out[tid] = (H, rvec, t, det.corners.astype(int), tag_size_m)
         return out
 
-    # def _canonicalize_pose_z_positive(self, H: np.ndarray) -> np.ndarray:
-    #     """
-    #     Enforce a deterministic, right-handed orientation for a tag pose H.
-    #
-    #     We require that the tag's z-axis (third column of R) has non-negative
-    #     projection on the world z axis, i.e. z_world[2] >= 0. If not, we
-    #     rotate the tag frame by 180° about its x-axis, which flips y,z
-    #     but keeps det(R)=+1.
-    #     """
-    #     pass
-    #     H = H.copy()
-    #     z_world = H[:3, 2]        # 3rd column = tag's z axis in world frame
-    #     if z_world[2] < 0:
-    #         # rotate tag frame by 180° about its local x-axis
-    #         H[:3, :3] = H[:3, :3] @ np.diag([1, -1, -1])
-    #     return H
-
     def _draw_axes(self, img, K, rvec, tvec, length_m):
         """Draws axes on the image for visualization."""
         axis = np.float32([[0, 0, 0], [length_m, 0, 0], [0, length_m, 0], [0, 0, length_m]])
