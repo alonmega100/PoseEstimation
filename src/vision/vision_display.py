@@ -1,6 +1,5 @@
 """
 Modular vision display manager for handling multiple camera feeds.
-Encapsulates common display logic for mosaic creation, serial number overlays, and window management.
 """
 
 import cv2
